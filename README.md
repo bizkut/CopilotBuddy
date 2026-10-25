@@ -86,7 +86,7 @@ All under `Bots/`. Every botbase inherits from `BotBase` and runs as a synchrono
 
 - `Bots/BGBuddy` — Battlegrounds: Warsong Gulch, Arathi Basin, Eye of the Storm, Alterac Valley, Strand of the Ancients, Isle of Conquest. Handles gates and vehicles by re-flagging navmesh polygons when their state changes.
 - `Bots/DungeonBuddy` — Dungeons: Dungeon Finder (LFG), SoloFarm mode, automatic role detection, random or specific queuing, boss handlers and dynamic avoidance. 32 WotLK and 32 Burning Crusade dungeon scripts included.
-- `Bots/Quest` — Questing: full system with `QuestOrder`, `ForcedBehavior`, `QuestObjective`.
+- `Bots/Quest` — Questing: full system with `QuestOrder`, `ForcedBehavior`, `QuestObjective`. A `<Quest Id=".." Daily="True" />` block marks a daily quest: it counts as completed only while it is in the player's daily slots (`PLAYER_FIELD_DAILY_QUESTS_1`), so a daily profile runs again after the reset instead of being skipped for good.
 - `Bots/Grind` — LevelBot: combat, loot, vendor, rest, roam, pull, flight, death and resurrection.
 - `Bots/Gatherbuddy` — Gathering: hardcoded lists of every herb and mineral up to the WotLK 450 skill cap.
 - `Bots/DiscoBot` — Party bot / follower with an associated `LeaderPlugin` for IPC coordination.
@@ -116,6 +116,14 @@ The API is exposed by `CopilotBuddy.dll` (in `bin/Debug/net10.0-windows7.0/` or 
 - For a combat routine: implement `Styx.Combat.CombatRoutine.ICombatRoutine` and drop it into `bin/.../Routines/`.
 
 The built-in `SourceCompiler` can also compile C# plugins at runtime from the bot UI.
+
+## Generating questing profiles from Zygor guides
+
+`Tools/ZygorToHB/zygor_to_hb.py` rebuilds the Zygor Guides Remaster (3.3.5a) dailies, reputation, Loremaster, Zygor/Ding80 leveling and legendary guides as profiles in `Questing-profiles/Zygor/<Faction>/`. It parses the guides with the addon's own `Parser.lua` (`pip install lupa`) and takes quest givers, objectives, drops and spawns from the server's live world database (mysqldump of `wl_world`) or, with `--azerothcore`, from an azerothcore-wotlk checkout. Quests whose objectives cannot all be mapped to `<Objective>` nodes get a guarded turn-in plus `AbandonQuest`, marked `REVIEW` in the profile.
+
+```
+python Tools/ZygorToHB/zygor_to_hb.py --zygor C:\Games\ZygorGuidesRemaster-3.3.5a_WOTLK --server C:\Games\Private\wow_legends_repack
+```
 
 ## Localization
 

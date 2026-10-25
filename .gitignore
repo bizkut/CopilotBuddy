@@ -53,3 +53,6 @@ datadb/*.backup
 # Runtime content shipped as release zip (replaces the tracked output/ tree)
 output/
 
+
+# ZygorToHB world data cache
+Tools/ZygorToHB/.cache/

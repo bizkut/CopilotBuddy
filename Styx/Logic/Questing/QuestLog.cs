@@ -21,6 +21,15 @@ namespace Styx.Logic.Questing
 		private static DateTime _completedQuestCacheTime = DateTime.MinValue;
 		private static readonly TimeSpan CompletedQuestCacheDuration = TimeSpan.FromMinutes(1);
 
+		private const uint DescDailyQuests = 0x500;  // PLAYER_FIELD_DAILY_QUESTS_1: today's turned-in dailies
+		private const uint DailyQuestSlots = 25;
+
+		static QuestLog()
+		{
+			// A new profile may declare other daily quests: rebuild the cache on the next query.
+			Styx.BotEvents.Profile.OnNewProfileLoaded += _ => _completedQuestCacheTime = DateTime.MinValue;
+		}
+
 		/// <summary>
 		/// Number of quests in the log.
 		/// Address: 12729040 (0xC24350)
@@ -270,6 +279,29 @@ namespace Styx.Logic.Questing
 				if (node.QuestId != 0)
 					_completedQuestIds.Add(node.QuestId);
 				nodeAddress = node.Next;
+			}
+
+			// Daily quests declared by the profile are completed only while they sit in today's daily
+			// slots: AzerothCore keeps every turned-in daily in the list above for good, TrinityCore never
+			// adds them, and neither tells when the daily reset made them available again.
+			var quests = Styx.Logic.Profiles.ProfileManager.CurrentOuterProfile?.Quests;
+			if (quests != null)
+			{
+				foreach (var quest in quests)
+				{
+					if (quest.Daily)
+						_completedQuestIds.Remove(quest.ID);
+				}
+			}
+			var me = ObjectManager.Me;
+			if (me != null && me.BaseAddress != 0U)
+			{
+				for (uint slot = 0; slot < DailyQuestSlots; slot++)
+				{
+					uint questId = me.ReadDescriptor<uint>(DescDailyQuests + slot);
+					if (questId != 0 && !_completedQuestIds.Contains(questId))
+						_completedQuestIds.Add(questId);
+				}
 			}
 
 			_completedQuestCacheTime = DateTime.Now;

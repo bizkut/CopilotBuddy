@@ -14,6 +14,12 @@ namespace Styx.Logic.Profiles.Quest
 		public uint ID { get; private set; }
 		public string Name { get; private set; }
 		public List<ObjectiveInfo> Objectives { get; private set; }
+		/// <summary>
+		/// Daily quest (profile attribute Daily="True"). The server keeps a turned-in daily in the
+		/// completed-quest list for good (AzerothCore) or never (TrinityCore); the quest log treats it as
+		/// completed only while it is in today's daily slots, so a daily profile runs again after the reset.
+		/// </summary>
+		public bool Daily { get; private set; }
 
 		public QuestInfo(uint id, string name)
 		{
@@ -62,6 +68,7 @@ namespace Styx.Logic.Profiles.Quest
 		{
 			uint id = 0U;
 			string name = string.Empty;
+			bool daily = false;
 			foreach (XAttribute xattribute in element.Attributes())
 			{
 				try
@@ -80,6 +87,13 @@ namespace Styx.Logic.Profiles.Quest
 						{
 							name = xattribute.Value;
 						}
+						else if (text == "daily")
+						{
+							if (!bool.TryParse(xattribute.Value, out daily))
+							{
+								throw new ProfileAttributeExpectedException<bool>(xattribute);
+							}
+						}
 					}
 				}
 				catch (ProfileException ex)
@@ -91,7 +105,7 @@ namespace Styx.Logic.Profiles.Quest
 			{
 				throw new ProfileMissingAttributeException<uint>("Id", element);
 			}
-			QuestInfo questInfo = new QuestInfo(id, name);
+			QuestInfo questInfo = new QuestInfo(id, name) { Daily = daily };
 			foreach (XElement xelement in element.Elements())
 			{
 				try
