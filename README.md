@@ -139,6 +139,8 @@ The executable lands in `bin/Release/net10.0-windows7.0/CopilotBuddy.exe` with `
 
 The C++ navigation wrapper is built separately with Visual Studio 2022 (see `Navigation C++/README.md`).
 
+Runtime prerequisites on the machine that runs the bot: `Lib/fasmdll_managed.dll` is a .NET Framework 2.0 C++/CLI assembly, so attaching needs **.NET Framework 3.5** (Windows feature) and the **Visual C++ 2008 SP1 x86 redistributable** (it asks for `Microsoft.VC90.CRT` 9.0.21022.8). Without them the attach fails with "No available WoW processes". The bot must run elevated (`requireAdministrator`).
+
 ## Limitations
 
 - Targets the WoW 3.3.5a client build 12340 only. No other clients or expansions are supported.
