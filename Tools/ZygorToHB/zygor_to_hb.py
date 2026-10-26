@@ -32,7 +32,7 @@ import re
 import sys
 from xml.sax.saxutils import escape, quoteattr
 
-from dbc import FactionTemplates, Locks, Zones
+from dbc import FactionTemplates, Locks, Spells, Zones
 from world_db import World
 from zygor_guides import guide_faction, load_guides
 
@@ -141,7 +141,7 @@ class Plan:
 
 
 class Converter:
-    def __init__(self, world: World, zones: Zones, factions: FactionTemplates, locks: Locks, side: str):
+    def __init__(self, world: World, zones: Zones, factions: FactionTemplates, locks: Locks, spells: Spells, side: str):
         self.world, self.zones, self.factions, self.side = world, zones, factions, side
         self.race_mask = sum(1 << (r - 1) for r in FACTION_RACES[side])
         self.stats = Counter()
@@ -150,6 +150,7 @@ class Converter:
             if q.next > 0:
                 self.next_of[q.next].append(q.id)
         self.locks = locks
+        self.spells = spells
 
     # ---------------------------------------------------------------- spawns
 
@@ -188,6 +189,11 @@ class Converter:
     def creature_name(self, entry):
         creature = self.world.creatures.get(entry)
         return creature.name if creature else str(entry)
+
+    def item_buffs_self(self, item):
+        """The item's spell is a pure self-buff (an aura on the player), so it is not used on a target."""
+        spell = (self.world.items.get(item) or {}).get("spellid_1")
+        return bool(spell) and self.spells.is_self_buff(spell)
 
     def object_name(self, entry):
         obj = self.world.objects.get(entry)
@@ -315,6 +321,28 @@ class Converter:
         creature = self.world.creatures.get(entry)
         direct = self.creature_spawns([entry], anchor)
         sources = [c for c in self.world.credit_sources.get(entry, ()) if self.creature_spawns([c], anchor)]
+        if use_items and self.item_buffs_self(use_items[0]):
+            # The quest item buffs the player (The Hunt is On: the Oculus of the Exorcist's Righteous Vision
+            # reveals hidden cultists), it is not used on the NPC: use it, then do what the step does with
+            # the NPC, talk (gossip starts the server script that turns the cultist hostile) and kill.
+            if not direct:
+                plan.review.append(f"use item {use_items[0]}: {entry} {self.creature_name(entry)} has no spawn near the guide coordinates")
+                return
+            plan.behaviors = True
+            out.append(f'{pad}<CustomBehavior File="UseItem" QuestId="{quest.id}" ItemId="{use_items[0]}" {xyz(direct[0])} />')
+            # `talk` goals carry npcid, `kill` targetid, `from` a list of mobs ({"id": ...}).
+            with_npc = {g.get("action") for g in step_goals
+                        if entry in (g.get("npcid"), g.get("targetid"))
+                        or any(isinstance(m, dict) and m.get("id") == entry for m in (g.get("mobs") or []))}
+            if "talk" in with_npc:
+                out.append(f'{pad}<CustomBehavior File="InteractWith" QuestId="{quest.id}" MobId="{entry}" GossipOptions="1" '
+                           f'NumOfTimes="1" CollectionDistance="200" {xyz(direct[0])} />')
+            if with_npc & {"kill", "from"} and creature is not None and not creature.unit_flags & UNIT_FLAG_NOT_ATTACKABLE:
+                out.append(f'{pad}<Objective QuestName={qname} QuestId="{quest.id}" Type="KillMob" MobId="{entry}" '
+                           f'KillCount="{count}" />')
+                plan.blocks.append([f'\t\t<Objective Type="KillMob" MobId="{entry}" KillCount="{count}">']
+                                   + hotspot_lines(direct, 3) + ["\t\t</Objective>"])
+            return
         if use_items:
             targets = [entry] if direct else sources[:6]
             spots = direct or self.creature_spawns(targets, anchor)
@@ -599,7 +627,7 @@ class Converter:
         if ender is None or ender[0] == "item":
             return [f"<!-- SKIP turn-in Q{quest.id} {escape(quest.title)}: no turn-in NPC with a spawn in the database -->",
                     f'<If Condition="((HasQuest({quest.id})) &amp;&amp; (!IsQuestCompleted({quest.id})))">',
-                    f'\t<CustomBehavior File="AbandonQuest" QuestId="{quest.id}" Type="Incomplete" />', "</If>"]
+                    f'\t<CustomBehavior File="AbandonQuest" QuestId="{quest.id}" Type="Incomplete" Remember="True" />', "</If>"]
         kind, entry, spot = ender
         name = self.creature_name(entry) if kind == "npc" else self.object_name(entry)
         typ = ' TurnInType="Object"' if kind == "object" else ""
@@ -611,11 +639,15 @@ class Converter:
         if plan.automated and not event:
             return [node]
         reasons = "; ".join(dict.fromkeys(plan.review)) or "objectives done by custom behaviors"
+        # A recorded gap (no item source, no spawned target, scripted event, ...) means the profile never
+        # attempts part of the quest, so the bot remembers giving up and skips the pickup next time.
+        # Quests whose objectives only need custom behaviors are attempted and can succeed: retried.
+        remember = ' Remember="True"' if plan.review else ""
         return [f"<!-- REVIEW Q{quest.id} {escape(quest.title)}: {escape(reasons)}. Turn-in guarded, quest abandoned "
                 "if still incomplete so the profile can continue. -->",
                 f'<If Condition="((HasQuest({quest.id})) &amp;&amp; (IsQuestCompleted({quest.id})))">', "\t" + node, "</If>",
                 f'<If Condition="((HasQuest({quest.id})) &amp;&amp; (!IsQuestCompleted({quest.id})))">',
-                f'\t<CustomBehavior File="AbandonQuest" QuestId="{quest.id}" Type="Incomplete" />', "</If>"]
+                f'\t<CustomBehavior File="AbandonQuest" QuestId="{quest.id}" Type="Incomplete"{remember} />', "</If>"]
 
     def skill_condition(self, quest):
         """Condition for the quest's skill requirement, None if it has none, False if a profile cannot check it."""
@@ -823,6 +855,7 @@ def main():
     zones = Zones(dbc)
     factions = FactionTemplates(dbc)
     locks = Locks(dbc)
+    spells = Spells(dbc)
 
     def home_zone(quest_ids):
         """Map zone most of the quests belong to (QuestSortID > 0 is an AreaTable zone)."""
@@ -836,7 +869,7 @@ def main():
     for side, sets in GUIDE_SETS.items():
         if args.faction and side != args.faction:
             continue
-        converter = Converter(world, zones, factions, locks, side)
+        converter = Converter(world, zones, factions, locks, spells, side)
         guides = []
         seen = set()
         for category, files in sets:
@@ -860,7 +893,7 @@ def main():
             raise SystemExit(f"{side}: guides share an output file name: {', '.join(clashes)}")
         # Guides without a convertible quest write no profile: their `next` link is followed
         # on so the LoadProfile chain lands on the next profile that exists.
-        probe = Converter(world, zones, factions, locks, side)
+        probe = Converter(world, zones, factions, locks, spells, side)
         empty = {g["title"] for c, g in guides if probe.convert(g, c, file_of_title) is None}
         next_of = {g["title"]: (g["header"].get("next") if isinstance(g["header"].get("next"), str) else None)
                    for _, g in guides}

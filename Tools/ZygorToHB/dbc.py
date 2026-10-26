@@ -94,3 +94,26 @@ class Locks:
 
     def items_for(self, lock_id):
         return self.items.get(lock_id, [])
+
+
+class Spells:
+    """Spell.dbc: which spells are pure self-buffs (quest items such as the Oculus of the Exorcist,
+    whose Righteous Vision reveals hidden cultists, are used on oneself, not on the quest NPC)."""
+
+    TARGET_UNIT_CASTER = 1
+    SPELL_EFFECT_APPLY_AURA = 6
+
+    def __init__(self, dbc: Path):
+        rows, _ = _read_dbc(dbc / "Spell.dbc", "<234I")
+        # effect[3] at 71, implicit target A[3] at 86, implicit target B[3] at 89. Only auras count: a
+        # dummy, script or create-item effect aimed at the caster is often scripted on the selected
+        # target (scraping a mob, taking a sample), so those items stay "use on the NPC".
+        self.self_buffs = set()
+        for row in rows:
+            effects = [k for k in range(3) if row[71 + k]]
+            if effects and all(row[71 + k] == self.SPELL_EFFECT_APPLY_AURA and row[86 + k] == self.TARGET_UNIT_CASTER
+                               and row[89 + k] == 0 for k in effects):
+                self.self_buffs.add(row[0])
+
+    def is_self_buff(self, spell_id):
+        return spell_id in self.self_buffs
