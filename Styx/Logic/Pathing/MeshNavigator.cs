@@ -45,6 +45,8 @@ namespace Styx.Logic.Pathing
 		private TripperNav.AreaType[]? _currentPolyTypes;
 		private TripperNav.AbilityFlags[]? _currentAbilityFlags;
 		private bool _isPartialPath;
+		private WoWPoint _diveTarget;
+		private WoWPoint _diveSurface;
 		private bool _ridingElevator;
 
 		// Push-ahead cache (HB 6.2.3 method_25/26)
@@ -225,6 +227,99 @@ namespace Styx.Logic.Pathing
 
 		public MoveResult MoveTo(WoWPoint destination, float precision, string destinationName)
 		{
+			// Diving to an underwater destination the mesh does not reach: path to the water
+			// surface straight above it, then swim straight down once overhead.
+			if (_diveTarget != WoWPoint.Zero && _diveTarget.DistanceSqr(destination) < 4f)
+			{
+				LocalPlayer? me = ObjectManager.Me;
+				if (me == null)
+					return MoveResult.Failed;
+				if (me.IsSwimming && me.Location.Distance2DSqr(destination) < 16f)
+				{
+					if (me.Location.Distance(destination) < precision)
+					{
+						_diveTarget = WoWPoint.Zero;
+						return MoveResult.ReachedDestination;
+					}
+					WoWMovement.ClickToMove(destination);
+					return MoveResult.Moved;
+				}
+				MoveResult toSurface = MoveToMesh(_diveSurface, PathPrecision, destinationName);
+				return toSurface == MoveResult.ReachedDestination ? MoveResult.Moved : toSurface;
+			}
+			_diveTarget = WoWPoint.Zero;
+			MoveResult result = MoveToMesh(destination, precision, destinationName);
+			if (result == MoveResult.PathGenerationFailed && TryFindWaterAbove(destination, out WoWPoint waterSurface))
+			{
+				Logging.WriteDiagnostic("[Nav] {0} is underwater off the mesh, diving from the surface at {1}",
+					destination, waterSurface);
+				_diveTarget = destination;
+				_diveSurface = waterSurface;
+				return MoveResult.Moved;
+			}
+			return result;
+		}
+
+		/// <summary>
+		/// Lowest water-surface mesh layer above a point (Detour searches only a few yards vertically,
+		/// so a sea-floor point 60 yards down has no path although the surface above it does).
+		/// </summary>
+		private bool TryWaterSurfaceAbove(WoWPoint point, out WoWPoint surface, out string reason)
+		{
+			surface = WoWPoint.Zero;
+			uint mapId = (uint)(ObjectManager.Me?.MapId ?? 0);
+			// FindHeights only sees loaded tiles; FindPath loads its endpoints, the height query does not.
+			try
+			{
+				TripperNavigator.EnsureTilesAroundPosition(mapId, new Vector3(point.X, point.Y, point.Z), Navigator.LoadTilesAroundRadius);
+			}
+			catch { }
+			List<float> above = Navigator.FindHeights(point.X, point.Y).Where(h => h > point.Z + 2f).OrderBy(h => h).ToList();
+			if (above.Count == 0)
+			{
+				reason = "no mesh layer above it";
+				return false;
+			}
+			var spot = new WoWPoint(point.X, point.Y, above[0]);
+			// Path results carry no area types; ask the polygons at the spot.
+			bool water = TripperNavigator.QueryPolygons(mapId, new Vector3(spot.X, spot.Y, spot.Z), new Vector3(1f, 1f, 1f), 16)
+				.Any(poly => (TripperNavigator.GetPolyArea(mapId, poly, out byte area) & 0x40000000u) != 0
+				             && area == (byte)TripperNav.AreaType.Water);
+			if (!water)
+			{
+				reason = $"layer at {above[0]:F1} is not water";
+				return false;
+			}
+			surface = spot;
+			reason = null;
+			return true;
+		}
+
+		/// <summary>Water surface above an underwater destination that a full path from us reaches.</summary>
+		private bool TryFindWaterAbove(WoWPoint destination, out WoWPoint surface)
+		{
+			LocalPlayer? me = ObjectManager.Me;
+			string reason = "no player";
+			if (me != null && TryWaterSurfaceAbove(destination, out surface, out reason))
+			{
+				TripperNav.PathFindResult path = FindPath(me.Location, surface);
+				if (path.Succeeded && !path.IsPartialPath)
+					return true;
+				reason = $"surface at {surface.Z:F1} has no full path";
+			}
+			surface = WoWPoint.Zero;
+			if (_noDiveLogged != destination)
+			{
+				_noDiveLogged = destination;
+				Logging.WriteDiagnostic("[Nav] No dive to {0}: {1}", destination, reason);
+			}
+			return false;
+		}
+
+		private WoWPoint _noDiveLogged;
+
+		private MoveResult MoveToMesh(WoWPoint destination, float precision, string destinationName)
+		{
 			if (destination == WoWPoint.Zero)
 				return MoveResult.Failed;
 
@@ -275,20 +370,31 @@ namespace Styx.Logic.Pathing
 				// HB 6.2.3 MeshNavigator.FindPath → MeshMovePath assignment.
 				var pathResult = FindPath(me.Location, destination);
 				// Underwater the start snaps to the nearest mesh layer, which can be a seabed island
-				// with no link to the shore (Farshire bay: 2 points, dead end 6 yards away); the
-				// water-surface layer above the toon connects, so plan from there and swim up to it.
-				if (pathResult.IsPartialPath && me.IsSwimming
-				    && GameWorld.TraceLine(me.Location.Add(0f, 0f, 200f), me.Location,
-				        GameWorld.CGWorldFrameHitFlags.HitTestLiquid, out WoWPoint surface)
-				    && surface.Z - me.Location.Z > 2f)
+				// with no link to the shore (Farshire bay: 2 points, dead end 6 yards away), or to none
+				// at all 60 yards down (Leviroth's sea floor); the water-surface layer above the toon
+				// connects, so plan from there and swim up to it. Standing on the sea floor the client
+				// clears the swimming flag, so the mesh is asked as well as the liquid trace.
+				bool noFullPath = pathResult.IsPartialPath || !pathResult.Succeeded
+				                  || pathResult.Points == null || pathResult.Points.Length == 0;
+				if (noFullPath)
 				{
-					var fromSurface = FindPath(surface, destination);
-					if (fromSurface.Succeeded && !fromSurface.IsPartialPath
-					    && fromSurface.Points != null && fromSurface.Points.Length > 0)
+					WoWPoint surface = WoWPoint.Zero;
+					bool found = me.IsSwimming
+					             && GameWorld.TraceLine(me.Location.Add(0f, 0f, 200f), me.Location,
+					                 GameWorld.CGWorldFrameHitFlags.HitTestLiquid, out surface)
+					             && surface.Z - me.Location.Z > 2f;
+					if (!found)
+						found = TryWaterSurfaceAbove(me.Location, out surface, out _);
+					if (found)
 					{
-						Logging.WriteDiagnostic("[Nav] Partial path from {0} underwater, planning from the surface at {1}",
-							me.Location, surface);
-						pathResult = fromSurface;
+						var fromSurface = FindPath(surface, destination);
+						if (fromSurface.Succeeded && !fromSurface.IsPartialPath
+						    && fromSurface.Points != null && fromSurface.Points.Length > 0)
+						{
+							Logging.WriteDiagnostic("[Nav] No full path from {0} underwater, planning from the surface at {1}",
+								me.Location, surface);
+							pathResult = fromSurface;
+						}
 					}
 				}
 				if (!pathResult.Succeeded || pathResult.Points == null || pathResult.Points.Length == 0)
@@ -381,7 +487,7 @@ namespace Styx.Logic.Pathing
 							_currentPath.Clear();
 							_currentPathIndex = 0;
 							_cachedPushAheadIndex = -1;
-							return MoveTo(destination, precision, destinationName);
+							return MoveToMesh(destination, precision, destinationName);
 						}
 					}
 				}
