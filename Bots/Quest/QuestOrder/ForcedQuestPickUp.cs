@@ -34,6 +34,7 @@ public class ForcedQuestPickUp : ForcedBehavior
     private static readonly Frame QuestFrameCompleteQuestButton = new Frame("QuestFrameCompleteQuestButton");
     private int lastShownQuestId = -1;
     private WaitTimer _pickupTimer;
+    private bool _giverHostile;
 
     public ForcedQuestPickUp(
         uint questId,
@@ -60,6 +61,11 @@ public class ForcedQuestPickUp : ForcedBehavior
             // 2) Quest is in the quest log (just accepted, ready for objectives)
             try
             {
+                // A giver that turned hostile (rival faction such as Oracles/Frenzyheart) never
+                // offers the quest; the pickup is skipped instead of timing out and stopping the bot.
+                if (this._giverHostile)
+                    return true;
+
                 // If quest is in completed cache, skip pickup
                 if (ObjectManager.Me.QuestLog.GetCompletedQuests().Contains(this.QuestId))
                     return true;
@@ -134,7 +140,7 @@ public class ForcedQuestPickUp : ForcedBehavior
             PoiType.Harvest,
             PoiType.Skin,
             PoiType.Loot
-        }, (Composite)new PrioritySelector(new Composite[4]
+        }, (Composite)new PrioritySelector(new Composite[5]
         {
             (Composite)new Decorator(new CanRunDecoratorDelegate(this.ShouldSetPoi), (Composite)new ActionSetPoi(true, (RetrieveBotPoiDelegate)(context => new BotPoi(new PickUpNode(this.GiverLocation, this.GiverId, this.GiverName, this.GiverType, this.QuestId, this.QuestName))))),
             (Composite)new Decorator((CanRunDecoratorDelegate)(context =>
@@ -150,6 +156,12 @@ public class ForcedQuestPickUp : ForcedBehavior
                     (Composite)new WaitContinue(2, (CanRunDecoratorDelegate)(context => false), (Composite)new ActionAlwaysSucceed())
                 }))
             })),
+            (Composite)new Decorator((CanRunDecoratorDelegate)(context => BotPoi.Current.Type == PoiType.QuestPickUp && BotPoi.Current.Entry == this.GiverId && BotPoi.Current.AsObject is WoWUnit giver && giver.IsHostile), (Composite)new TreeSharp.Action((ActionSucceedDelegate)(context =>
+            {
+                Logging.Write(Color.Orange, "[PickUp] {0} is hostile to us, skipping {1}", BotPoi.Current.AsObject.Name, this.QuestName);
+                this._giverHostile = true;
+                BotPoi.Clear("Quest giver hostile");
+            }))),
             (Composite)new Decorator((CanRunDecoratorDelegate)(context => !(BotPoi.Current.AsObject != (WoWObject)null) ? (double)ForcedQuestPickUp.Me.Location.DistanceSqr(BotPoi.Current.Location) > 6.25 : !BotPoi.Current.AsObject.WithinInteractRange), (Composite)new ActionMoveToPoi()),
             (Composite)new Decorator((CanRunDecoratorDelegate)(context => BotPoi.Current.AsObject != (WoWObject)null && BotPoi.Current.AsObject.WithinInteractRange), (Composite)new Sequence((ContextChangeHandler)(context => (object)BotPoi.Current.AsObject), new Composite[11]
             {

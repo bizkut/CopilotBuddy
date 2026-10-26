@@ -30,6 +30,7 @@ public class ForcedQuestTurnIn : ForcedBehavior
     private readonly Frame QuestTitleButton = new Frame("QuestTitleButton1");
     private static readonly Frame QuestFrameCompleteButton = new Frame("QuestFrameCompleteButton");
     private int completeQuestAttempts;
+    private bool _npcHostile;
 
     public ForcedQuestTurnIn(uint questId, string questName, uint npcId, string npcName, WoWPoint location)
     {
@@ -49,7 +50,8 @@ public class ForcedQuestTurnIn : ForcedBehavior
     {
     }
 
-    public override bool IsDone => !ObjectManager.Me.QuestLog.ContainsQuest(this.QuestId);
+    // A turn-in NPC that turned hostile (rival faction) is skipped; the quest stays in the log.
+    public override bool IsDone => this._npcHostile || !ObjectManager.Me.QuestLog.ContainsQuest(this.QuestId);
 
     public uint QuestId { get; private set; }
 
@@ -63,7 +65,8 @@ public class ForcedQuestTurnIn : ForcedBehavior
 
     public override void Dispose()
     {
-        StyxWoW.Me.QuestLog.AddCompletedQuest(this.QuestId);
+        if (!this._npcHostile)
+            StyxWoW.Me.QuestLog.AddCompletedQuest(this.QuestId);
     }
 
     public override void OnStart()
@@ -89,13 +92,19 @@ public class ForcedQuestTurnIn : ForcedBehavior
             PoiType.Harvest,
             PoiType.Skin,
             PoiType.Loot
-        }, (Composite)new PrioritySelector((ContextChangeHandler)(context => (object)null), new Composite[3]
+        }, (Composite)new PrioritySelector((ContextChangeHandler)(context => (object)null), new Composite[4]
         {
             (Composite)new Decorator(new CanRunDecoratorDelegate(this.ShouldSetPoi), (Composite)new ActionSetPoi(true, (RetrieveBotPoiDelegate)(context => new BotPoi(PoiType.QuestTurnIn)
             {
                 Name = this.NpcName,
                 Entry = this.NpcId,
                 Location = this.Location
+            }))),
+            (Composite)new Decorator((CanRunDecoratorDelegate)(context => BotPoi.Current.Type == PoiType.QuestTurnIn && BotPoi.Current.Entry == this.NpcId && BotPoi.Current.AsObject is WoWUnit npc && npc.IsHostile), (Composite)new TreeSharp.Action((ActionSucceedDelegate)(context =>
+            {
+                Logging.Write(Color.Orange, "[TurnIn] {0} is hostile to us, skipping {1}", BotPoi.Current.AsObject.Name, this.QuestName);
+                this._npcHostile = true;
+                BotPoi.Clear("Turn-in NPC hostile");
             }))),
             (Composite)new Decorator((CanRunDecoratorDelegate)(context => !(BotPoi.Current.AsObject != (WoWObject)null) ? (double)ForcedQuestTurnIn.Me.Location.DistanceSqr(BotPoi.Current.Location) > 16.0 : !BotPoi.Current.AsObject.WithinInteractRange), (Composite)new ActionMoveToPoi()),
             (Composite)new Decorator((CanRunDecoratorDelegate)(context => BotPoi.Current.AsObject != (WoWObject)null && BotPoi.Current.AsObject.WithinInteractRange), (Composite)new Sequence((ContextChangeHandler)(context => (object)BotPoi.Current.AsObject), new Composite[9]
