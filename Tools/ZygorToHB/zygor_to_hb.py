@@ -291,11 +291,6 @@ class Converter:
             plan.blocks.append(block)
             out.append(f'{pad}<Objective QuestName={qname} QuestId="{quest.id}" Type="CollectItem" ItemId="{entry}" '
                        f'CollectCount="{count}" />')
-            block = [f'\t\t<Objective Type="CollectItem" ItemId="{entry}" CollectCount="{count}">', "\t\t\t<CollectFrom>"]
-            block += [f'\t\t\t\t<Mob Name={attr(self.creature_name(m))} Id="{m}" />' for m in mob_ids]
-            block += [f'\t\t\t\t<GameObject Name={attr(self.object_name(o))} Id="{o}" />' for o in obj_ids]
-            block += ["\t\t\t</CollectFrom>"] + hotspot_lines(spread(hotspots, MAX_HOTSPOTS), 3) + ["\t\t</Objective>"]
-            plan.blocks.append(block)
             return
         if entry < 0:
             obj = -entry
