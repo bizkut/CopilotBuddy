@@ -695,6 +695,10 @@ def main():
                 faction = guide_faction(guide)
                 if (faction and faction != side) or guide["title"] in seen:
                     continue
+                if "Events" in guide["title"].split("\\")[1:-1]:
+                    # Holiday guides: outside the event the giver offers nothing and the
+                    # bot stops at the pickup timeout, which a profile cannot check for.
+                    continue
                 seen.add(guide["title"])
                 guides.append((category, guide))
         file_of_title = {g["title"]: output_name(g["title"], c) for c, g in guides}
