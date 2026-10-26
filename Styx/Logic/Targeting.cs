@@ -55,6 +55,13 @@ namespace Styx.Logic
 
         static Targeting()
         {
+            // Once for every Targeting flavour (loot, heal, dungeon, BG): refused attack targets.
+            BotEvents.OnBotStart += args => Lua.Events.AttachEvent("UI_ERROR_MESSAGE", OnUiErrorMessage);
+            BotEvents.OnBotStop += args =>
+            {
+                Lua.Events.DetachEvent("UI_ERROR_MESSAGE", OnUiErrorMessage);
+                _refusedTargets.Clear();
+            };
             Targeting._blacklistedMobNames = new List<string>();
             HashSet<uint> hashSet = new HashSet<uint>();
             hashSet.Add(28093U);
@@ -264,6 +271,68 @@ namespace Styx.Logic
             this.IncludeTargetsFilter += this.DefaultIncludeTargetsFilter;
             this.RemoveTargetsFilter += this.DefaultRemoveTargetsFilter;
             this.WeighTargetsFilter += this.DefaultTargetWeight;
+        }
+
+        // Units the server refused as attack targets, until the time shown. The client can disagree:
+        // with a peace-forced faction we are Hated with (Valiance Expedition after a GM change, the
+        // losing Sholazar side, Oracles or Frenzyheart) UnitCanAttack says yes and the NPC attacks us,
+        // but the server never puts us at war with it and rejects every attack as an invalid target.
+        private static readonly Dictionary<ulong, DateTime> _refusedTargets = new Dictionary<ulong, DateTime>();
+        private static string[] _refusalMessages;
+
+        private static void OnUiErrorMessage(object sender, LuaEventArgs e)
+        {
+            if (e.Args == null || e.Args.Length == 0)
+                return;
+            _refusalMessages ??= new[]
+            {
+                Lua.GetReturnVal<string>("return SPELL_FAILED_BAD_TARGETS", 0U),
+                Lua.GetReturnVal<string>("return ERR_INVALID_ATTACK_TARGET", 0U),
+            };
+            string message = Convert.ToString(e.Args[0]);
+            if (string.IsNullOrEmpty(message) || Array.IndexOf(_refusalMessages, message) < 0)
+                return;
+            // "Invalid target" also answers a cast on a mob that just died or a wrong spell target; only
+            // a live NPC red to us by reputation alone can be the peace-forced refusal described above.
+            WoWUnit target = StyxWoW.Me?.CurrentTarget;
+            if (target == null || target.IsPlayer || target.Dead || !IsHostileByReputationOnly(target) || !target.IsHostile)
+                return;
+            _refusedTargets[target.Guid] = DateTime.UtcNow.AddMinutes(3);
+            Logging.Write(System.Drawing.Color.Orange, "[Targeting] The server refuses {0} as a target ({1}), ignoring it for 3 minutes",
+                target.Name, message);
+            StyxWoW.Me.ClearTarget();
+        }
+
+        private static bool IsRefusedTarget(WoWUnit unit)
+        {
+            if (!_refusedTargets.TryGetValue(unit.Guid, out DateTime until))
+                return false;
+            if (until > DateTime.UtcNow)
+                return true;
+            _refusedTargets.Remove(unit.Guid);
+            return false;
+        }
+
+        private static readonly Dictionary<(uint unit, uint me), bool> _reputationOnlyHostility = new Dictionary<(uint, uint), bool>();
+
+        /// <summary>
+        /// The unit is red to us only because of our standing: its faction tracks reputation and its
+        /// faction template alone is not hostile to ours (Valiance Expedition for an Alliance player,
+        /// the Sholazar side we did not pick). The server attacks us on our rank but lets us attack
+        /// back only at war, which peace-forced factions never are, so such units are never pulled.
+        /// </summary>
+        private static bool IsHostileByReputationOnly(WoWUnit unit)
+        {
+            var key = (unit.FactionId, StyxWoW.Me.FactionId);
+            if (!_reputationOnlyHostility.TryGetValue(key, out bool repOnly))
+            {
+                var theirs = new WoWFaction(key.Item1, true);
+                var mine = new WoWFaction(key.Item2, true);
+                repOnly = theirs.Record.RepGainId >= 0
+                          && WoWFaction.CompareFactions(theirs, mine) != WoWUnitReaction.Hostile;
+                _reputationOnlyHostility[key] = repOnly;
+            }
+            return repOnly;
         }
 
         public event IncludeTargetsFilterDelegate IncludeTargetsFilter
@@ -518,6 +587,19 @@ namespace Styx.Logic
                     {
                         bool isPlayer = woWObject is WoWPlayer;
                         WoWUnit woWUnit3 = (WoWUnit)woWObject;
+                        // Checked before the "it is attacking us, keep it" rules below: a unit the
+                        // server will not let us attack stays refused even while it hits us, and a unit
+                        // red to us only by reputation is answered when it attacks, never pulled.
+                        // Cheap descriptor reads and the cached faction-table lookup come first; the
+                        // native reaction call behind IsHostile only runs for reputation-tracked units.
+                        if (IsRefusedTarget(woWUnit3)
+                            || (!isPlayer && !woWUnit3.Aggro && !woWUnit3.PetAggro
+                                && !woWUnit3.IsTargetingMeOrPet && !woWUnit3.IsTargetingAnyMinion
+                                && IsHostileByReputationOnly(woWUnit3) && woWUnit3.IsHostile))
+                        {
+                            units.RemoveAt(i);
+                            continue;
+                        }
                         bool combat = woWUnit3.Combat;
 
                         if (isPlayer || !combat || !flag || (!hashSet2.Contains(woWUnit3.CurrentTargetGuid) && !hashSet.Contains(woWUnit3.Guid)))
