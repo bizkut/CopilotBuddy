@@ -91,7 +91,8 @@ SPAWN_FALLBACK = 1500.0   # nearest spawns still accepted when none is in the ra
 HOTSPOT_SPACING = 40.0
 MAX_HOTSPOTS = 8
 
-UNIT_FLAG_NOT_ATTACKABLE = 0x2 | 0x100 | 0x2000000   # NON_ATTACKABLE, IMMUNE_TO_PC, NOT_SELECTABLE
+UNIT_FLAG_IMMUNE_TO_PC = 0x100
+UNIT_FLAG_NOT_ATTACKABLE = 0x2 | UNIT_FLAG_IMMUNE_TO_PC | 0x2000000   # NON_ATTACKABLE, IMMUNE_TO_PC, NOT_SELECTABLE
 
 # Quest skill requirements a profile condition can check: riding by its rank spell (Apprentice 75, Journeyman 150,
 # Expert 225, Artisan 300), gathering by the ConditionGlobals skill properties. Others are skipped at pickup.
@@ -325,6 +326,14 @@ class Converter:
             mobs = " ".join(f'MobId{i + 1 if i else ""}="{m}"' for i, m in enumerate(targets))
             out.append(f'{pad}<CustomBehavior File="UseItemOn" QuestId="{quest.id}" ItemId="{use_items[0]}" {mobs} '
                        f'NumOfTimes="{count}" Range="5" CollectionDistance="200" {xyz(spots[0])} />')
+            if direct and entry in self.world.attackable_after_spell:
+                # The item only makes the target attackable (Leviroth: the Trident of Naz'jan hit removes
+                # IMMUNE_TO_PC in its SmartAI and it attacks); the quest wants it killed, so fight it to
+                # the end instead of checking the quest the moment the item is used.
+                out.append(f'{pad}<Objective QuestName={qname} QuestId="{quest.id}" Type="KillMob" MobId="{entry}" '
+                           f'KillCount="{count}" />')
+                plan.blocks.append([f'\t\t<Objective Type="KillMob" MobId="{entry}" KillCount="{count}">']
+                                   + hotspot_lines(direct, 3) + ["\t\t</Objective>"])
             return
         if action in ("talk", "clicknpc", "click"):
             if not direct:

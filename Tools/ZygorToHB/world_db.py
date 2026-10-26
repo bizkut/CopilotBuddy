@@ -19,10 +19,10 @@ import subprocess
 TABLES = ["quest_template", "quest_template_addon", "creature_queststarter", "creature_questender",
           "gameobject_queststarter", "gameobject_questender", "creature_template", "creature", "gameobject_template",
           "gameobject", "item_template", "reference_loot_template", "creature_loot_template",
-          "gameobject_loot_template", "npc_vendor", "areatrigger", "areatrigger_involvedrelation"]
+          "gameobject_loot_template", "npc_vendor", "areatrigger", "areatrigger_involvedrelation", "smart_scripts"]
 
 CACHE_DIR = Path(__file__).resolve().parent / ".cache"
-CACHE_VERSION = 7
+CACHE_VERSION = 8
 
 _COLUMN = re.compile(r"^\s*`(\w+)`", re.M)
 _VALUE = re.compile(r"'((?:[^'\\]|\\.|'')*)'|(NULL)|(-?[0-9.eE+-]+)")
@@ -148,6 +148,7 @@ class World:
         self.item_from_objects: dict[int, list] = defaultdict(list)    # item -> [(gameobject, chance)]
         self.credit_sources: dict[int, list] = defaultdict(list)       # kill credit entry -> creatures granting it
         self.vendors: dict[int, set] = defaultdict(set)                # creature -> items sold
+        self.attackable_after_spell: set[int] = set()                   # creatures a spell hit makes attackable
 
     @staticmethod
     def from_azerothcore(azerothcore: Path) -> "World":
@@ -285,3 +286,10 @@ class World:
             quest = self.quests.get(row["quest"])
             if quest and row["id"] in triggers:
                 quest.areatriggers.append(triggers[row["id"]])
+        # SmartAI: on spell hit (event 8) remove unit flag (action 19) IMMUNE_TO_PC (0x100), as Leviroth
+        # does when the Trident of Naz'jan hits it: the quest item opens a fight, it is not the credit.
+        for row in _rows(dumps / "smart_scripts.sql", ["entryorguid", "source_type", "event_type", "action_type",
+                                                       "action_param1"]):
+            if row["source_type"] == 0 and row["entryorguid"] > 0 and row["event_type"] == 8 \
+                    and row["action_type"] == 19 and row["action_param1"] & 0x100:
+                self.attackable_after_spell.add(row["entryorguid"])
