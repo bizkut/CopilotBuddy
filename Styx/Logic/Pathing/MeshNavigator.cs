@@ -274,6 +274,23 @@ namespace Styx.Logic.Pathing
 
 				// HB 6.2.3 MeshNavigator.FindPath → MeshMovePath assignment.
 				var pathResult = FindPath(me.Location, destination);
+				// Underwater the start snaps to the nearest mesh layer, which can be a seabed island
+				// with no link to the shore (Farshire bay: 2 points, dead end 6 yards away); the
+				// water-surface layer above the toon connects, so plan from there and swim up to it.
+				if (pathResult.IsPartialPath && me.IsSwimming
+				    && GameWorld.TraceLine(me.Location.Add(0f, 0f, 200f), me.Location,
+				        GameWorld.CGWorldFrameHitFlags.HitTestLiquid, out WoWPoint surface)
+				    && surface.Z - me.Location.Z > 2f)
+				{
+					var fromSurface = FindPath(surface, destination);
+					if (fromSurface.Succeeded && !fromSurface.IsPartialPath
+					    && fromSurface.Points != null && fromSurface.Points.Length > 0)
+					{
+						Logging.WriteDiagnostic("[Nav] Partial path from {0} underwater, planning from the surface at {1}",
+							me.Location, surface);
+						pathResult = fromSurface;
+					}
+				}
 				if (!pathResult.Succeeded || pathResult.Points == null || pathResult.Points.Length == 0)
 				{
 					Logging.Write(System.Drawing.Color.Red,
