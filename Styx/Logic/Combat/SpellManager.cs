@@ -685,6 +685,8 @@ namespace Styx.Logic.Combat
 		public static void CastSpellById(int spellId, ulong targetGuid)
 		{
 			StyxWoW.ResetAfk();
+			// A cast starts cooldowns (its own and the GCD) and spends mana or reagents.
+			WoWSpell.ForgetCastState();
 
 			ExecutorRand? executor = ObjectManager.Executor;
 			if (executor == null)

@@ -37,10 +37,11 @@ namespace Styx.Logic
         public static BattlegroundType Current => GetCurrentBattleground();
 
         /// <summary>
-        /// Whether player is inside an active battleground.
-        /// Computed from queue status — not a manual setter.
+        /// Whether player is inside a battleground: on one of the battleground maps. Read from memory;
+        /// the Lua queue scan this replaced ran on every MoveTo, mount check and targeting pulse and
+        /// cost about a game frame each time.
         /// </summary>
-        public static bool IsInsideBattleground => GetBGIndexWithStatus(BattlegroundStatus.Active) != -1;
+        public static bool IsInsideBattleground => GetCurrentBattleground() != BattlegroundType.None;
 
         /// <summary>
         /// Whether bot is active in battleground mode.

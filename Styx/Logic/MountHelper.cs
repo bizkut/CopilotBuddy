@@ -50,7 +50,21 @@ namespace Styx.Logic
         /// <summary>
         /// Gets the number of mounts the player has.
         /// </summary>
-        public static int NumMounts => Lua.GetReturnVal<int>("return GetNumCompanions('MOUNT')", 0U);
+        public static int NumMounts
+        {
+            get
+            {
+                // Asked on every MoveTo through Mount.CanMount; the count only changes when a mount is learned.
+                DateTime now = DateTime.UtcNow;
+                if (now - _numMounts.checkedAt < TimeSpan.FromSeconds(5))
+                    return _numMounts.count;
+                int count = Lua.GetReturnVal<int>("return GetNumCompanions('MOUNT')", 0U);
+                _numMounts = (count, now);
+                return count;
+            }
+        }
+
+        private static (int count, DateTime checkedAt) _numMounts;
 
         /// <summary>
         /// Gets all mounts available to the player.

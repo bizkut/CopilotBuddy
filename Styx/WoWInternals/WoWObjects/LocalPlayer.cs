@@ -394,22 +394,31 @@ namespace Styx.WoWInternals.WoWObjects
             }
         }
         
+        private static (bool inVehicle, DateTime checkedAt) _inVehicle;
+
         /// <summary>
         /// Whether the player is currently in a vehicle.
-        /// Vehicles were introduced in WotLK 3.3.5a. Uses Lua UnitInVehicle("player").
+        /// Vehicles were introduced in WotLK 3.3.5a. Uses Lua UnitInVehicle("player"), kept for half a
+        /// second: Flightor asks it on every MoveTo and each Lua call waits for a game frame.
         /// </summary>
         public bool InVehicle
         {
             get
             {
+                DateTime now = DateTime.UtcNow;
+                if (now - _inVehicle.checkedAt < TimeSpan.FromMilliseconds(500))
+                    return _inVehicle.inVehicle;
+                bool inVehicle;
                 try
                 {
-                    return Lua.GetReturnVal<bool>("return UnitInVehicle('player')", 0);
+                    inVehicle = Lua.GetReturnVal<bool>("return UnitInVehicle('player')", 0);
                 }
                 catch
                 {
-                    return false;
+                    inVehicle = false;
                 }
+                _inVehicle = (inVehicle, now);
+                return inVehicle;
             }
         }
 
@@ -577,22 +586,31 @@ namespace Styx.WoWInternals.WoWObjects
         public override double Distance => 0;
         public override double DistanceSqr => 0;
 
+        private static (bool outdoors, DateTime checkedAt) _outdoors;
+
         /// <summary>
         /// FEAT-45: More accurate indoor check for LocalPlayer via Lua IsOutdoors().
-        /// HB 4.3.4 overrides IsOutdoors on LocalPlayer with Lua call.
+        /// HB 4.3.4 overrides IsOutdoors on LocalPlayer with Lua call. Kept for a second: the mount
+        /// checks ask it on every MoveTo and each Lua call waits for a game frame.
         /// </summary>
         public override bool IsOutdoors
         {
             get
             {
+                DateTime now = DateTime.UtcNow;
+                if (now - _outdoors.checkedAt < TimeSpan.FromSeconds(1))
+                    return _outdoors.outdoors;
+                bool outdoors;
                 try
                 {
-                    return Lua.GetReturnVal<bool>("return IsOutdoors()", 0);
+                    outdoors = Lua.GetReturnVal<bool>("return IsOutdoors()", 0);
                 }
                 catch
                 {
-                    return true;
+                    outdoors = true;
                 }
+                _outdoors = (outdoors, now);
+                return outdoors;
             }
         }
 

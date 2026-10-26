@@ -329,6 +329,27 @@ namespace Styx.Logic.Combat
             }
         }
 
+        // Each Lua query below waits for a game frame (~8 ms); routines ask them every tick for every
+        // buff and filler (half the bot's tick time). A cooldown that is running cannot end early, so it
+        // is kept until it runs out; a ready spell stays ready until we cast something (SpellManager
+        // casts clear the cache), with a short cap for casts the bot does not see (macros, quest items).
+        private static readonly Dictionary<int, (DateTime endsAt, DateTime checkedAt)> _cooldowns = new();
+        private static readonly Dictionary<int, (bool usable, DateTime checkedAt)> _usable = new();
+        private static readonly TimeSpan ReadyRecheck = TimeSpan.FromSeconds(2);
+        private static readonly TimeSpan UsableRecheck = TimeSpan.FromMilliseconds(300);
+
+        private static readonly object _castStateLock = new object();
+
+        /// <summary>Forget cached cooldown and usability answers: a cast changes both.</summary>
+        internal static void ForgetCastState()
+        {
+            lock (_castStateLock)
+            {
+                _cooldowns.Clear();
+                _usable.Clear();
+            }
+        }
+
         /// <summary>
         /// Gets the remaining cooldown time for this spell.
         /// WotLK 3.3.5a: GetSpellCooldown() requires the spell name in the CLIENT'S LANGUAGE.
@@ -340,13 +361,25 @@ namespace Styx.Logic.Combat
         {
             get
             {
+                DateTime now = DateTime.UtcNow;
+                lock (_castStateLock)
+                {
+                    if (_cooldowns.TryGetValue(Id, out var cached))
+                    {
+                        if (cached.endsAt > now)
+                            return cached.endsAt - now;
+                        if (now - cached.checkedAt < ReadyRecheck)
+                            return TimeSpan.Zero;
+                    }
+                }
                 // GetSpellInfo(id) returns the localized spell name regardless of client language.
                 // GetSpellCooldown(localizedName) then works on ALL clients.
                 double returnVal = Lua.GetReturnVal<double>(
                     string.Format("local n=GetSpellInfo({0}); if not n then return 0 end; local x,y=GetSpellCooldown(n); if not x then return 0 end; return x+y-GetTime()", Id), 0U);
-                if (returnVal <= 0.0)
-                    return TimeSpan.Zero;
-                return TimeSpan.FromSeconds(returnVal);
+                TimeSpan left = returnVal <= 0.0 ? TimeSpan.Zero : TimeSpan.FromSeconds(returnVal);
+                lock (_castStateLock)
+                    _cooldowns[Id] = (now + left, now);
+                return left;
             }
         }
 
@@ -391,7 +424,16 @@ namespace Styx.Logic.Combat
         {
             get
             {
-                return Lua.GetReturnVal<bool>("return IsUsableSpell(select(1, GetSpellInfo(" + Id + ")))", 0U);
+                DateTime now = DateTime.UtcNow;
+                lock (_castStateLock)
+                {
+                    if (_usable.TryGetValue(Id, out var cached) && now - cached.checkedAt < UsableRecheck)
+                        return cached.usable;
+                }
+                bool usable = Lua.GetReturnVal<bool>("return IsUsableSpell(select(1, GetSpellInfo(" + Id + ")))", 0U);
+                lock (_castStateLock)
+                    _usable[Id] = (usable, now);
+                return usable;
             }
         }
 
