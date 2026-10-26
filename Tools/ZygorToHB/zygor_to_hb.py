@@ -370,8 +370,6 @@ class Converter:
                     point = self.zones.to_world(goal.get("map") or step.get("map"), goal["x"], goal["y"])
                     if point is not None:
                         anchor = point
-                        if first_map is None:
-                            first_map = (point[0], goal.get("map") or step.get("map"))
                 if goal.get("action") == "talk" and goal.get("npcid"):
                     talk_npc = goal["npcid"]
             for goal in goals:
@@ -392,6 +390,8 @@ class Converter:
                         self.stats["group"] += 1
                         continue
                     nodes = self.pickup(plan, talk_npc, anchor)
+                    # The travel snip targets the continent of the first quest, not of the
+                    # first goto (Northrend guides open in Stormwind, at the boat).
                     if nodes and first_map is None and anchor is not None:
                         first_map = (anchor[0], step.get("map"))
                     body.extend(nodes)
@@ -400,6 +400,8 @@ class Converter:
                 elif action == "turnin":
                     body.extend(self.remaining(plan, goals, anchor))
                     body.extend(self.turnin(plan, talk_npc, anchor))
+                    if first_map is None and anchor is not None:
+                        first_map = (anchor[0], step.get("map"))
                     if anchor is not None:
                         hub_points.append(anchor)
                 elif action in ("kill", "collect", "get", "goal", "click", "clicknpc", "talk", "use", "buy"):
