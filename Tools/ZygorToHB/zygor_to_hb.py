@@ -130,7 +130,9 @@ class Plan:
     review: list = field(default_factory=list)   # reasons the quest is not fully automated
     behaviors: bool = False                      # a custom behavior (not an Objective node) does part of it
     done: set = field(default_factory=set)       # objective keys already emitted
-    blocks: list = field(default_factory=list)   # <Quest> block objective elements
+    pending: list = field(default_factory=list)  # objective nodes seen before the pickup, flushed after it
+    blocks: list = field(default_factory=list)  # <Quest> block objective elements
+    has_pickup: bool = False
 
     @property
     def automated(self):
@@ -282,6 +284,11 @@ class Converter:
                 plan.review.append(f"item {entry} {self.item_name(entry)} has no drop or chest near the guide coordinates")
                 return
             mob_ids, obj_ids = mob_ids[:6], obj_ids[:6]
+            block = [f'\t\t<Objective Type="CollectItem" ItemId="{entry}" CollectCount="{count}">', "\t\t\t<CollectFrom>"]
+            block += [f'\t\t\t\t<Mob Name={attr(self.creature_name(m))} Id="{m}" />' for m in mob_ids]
+            block += [f'\t\t\t\t<GameObject Name={attr(self.object_name(o))} Id="{o}" />' for o in obj_ids]
+            block += ["\t\t\t</CollectFrom>"] + hotspot_lines(spread(hotspots, MAX_HOTSPOTS), 3) + ["\t\t</Objective>"]
+            plan.blocks.append(block)
             out.append(f'{pad}<Objective QuestName={qname} QuestId="{quest.id}" Type="CollectItem" ItemId="{entry}" '
                        f'CollectCount="{count}" />')
             block = [f'\t\t<Objective Type="CollectItem" ItemId="{entry}" CollectCount="{count}">', "\t\t\t<CollectFrom>"]
@@ -304,10 +311,10 @@ class Converter:
                 plan.review.append(f"object {obj} {self.object_name(obj)} has no spawn near the guide coordinates")
                 return
             out.extend(pad + line for line in self.lock_keys(plan, obj, anchor))
-            out.append(f'{pad}<Objective QuestName={qname} QuestId="{quest.id}" Type="UseObject" ObjectId="{obj}" '
-                       f'UseCount="{count}" />')
             plan.blocks.append([f'\t\t<Objective Type="UseObject" ObjectId="{obj}" UseCount="{count}">']
                                + hotspot_lines(spots, 3) + ["\t\t</Objective>"])
+            out.append(f'{pad}<Objective QuestName={qname} QuestId="{quest.id}" Type="UseObject" ObjectId="{obj}" '
+                       f'UseCount="{count}" />')
             return
         creature = self.world.creatures.get(entry)
         direct = self.creature_spawns([entry], anchor)
@@ -382,71 +389,62 @@ class Converter:
         for step in guide["steps"]:
             goals = step.get("goals") or []
             body = []
-            talk_npc = None
             for goal in goals:
                 if goal.get("x") is not None:
                     point = self.zones.to_world(goal.get("map") or step.get("map"), goal["x"], goal["y"])
                     if point is not None:
                         anchor = point
-                if goal.get("action") == "talk" and goal.get("npcid"):
-                    talk_npc = goal["npcid"]
+            talk_npc = next((g["npcid"] for g in goals if g.get("action") == "talk" and g.get("npcid")), None)
             for goal in goals:
                 action = goal.get("action")
-                quest = self.world.quests.get(goal.get("questid") or 0)
+                if not goal.get("questid"):
+                    # Non-quest goals (bare gotos, flavor talks, item-started quests).
+                    if action in ("collect", "get") and goal.get("targetid"):
+                        body.extend(self.starter_item(goal["targetid"], anchor))
+                    continue
+                quest = self.world.quests.get(goal["questid"])
                 if quest is None:
-                    if goal.get("questid"):
-                        body.append(f"<!-- quest {goal['questid']} is not in the 3.3.5a database, step skipped -->")
+                    body.append(f"<!-- quest {goal['questid']} is not in the 3.3.5a database, step skipped -->")
+                    continue
+                if quest.group >= 3 and ("group", 0) not in plan_for(quest).done:
+                    plan_for(quest).done.add(("group", 0))
+                    body.extend(self.skipped(plan_for(quest), quest.group))
+                    continue
+                if quest.group >= 3:
                     continue
                 if not self.available(quest):
                     continue
                 plan = plan_for(quest)
+                condition = step_condition(step)
                 if action == "accept":
-                    if quest.group >= 3:
-                        plan.review.append(f"group quest ({quest.group} players)")
-                        body.append(f"<!-- SKIP Q{quest.id} {escape(quest.title)}: group quest "
-                                    f"({quest.group} players) -->")
-                        self.stats["group"] += 1
-                        continue
                     nodes = self.pickup(plan, talk_npc, anchor)
                     # The travel snip targets the continent of the first quest, not of the
                     # first goto (Northrend guides open in Stormwind, at the boat).
-                    if nodes and first_map is None and anchor is not None:
+                    if plan.has_pickup and first_map is None and anchor is not None:
                         first_map = (anchor[0], step.get("map"))
-                    body.extend(nodes)
+                    body.extend(self.wrap(nodes, condition))
+                    body.extend(self.flush(plan))
                     if anchor is not None:
                         hub_points.append(anchor)
                 elif action == "turnin":
-                    body.extend(self.remaining(plan, goals, anchor))
-                    body.extend(self.turnin(plan, talk_npc, anchor))
+                    # Everything still unemitted for the quest (key farms, guard steps, map
+                    # exploration) belongs before the turn-in, not after a later pickup.
+                    body.extend(self.flush(plan, talk_npc, anchor))
+                    body.extend(self.wrap(self.turnin(plan, talk_npc, anchor), condition))
                     if first_map is None and anchor is not None:
                         first_map = (anchor[0], step.get("map"))
                     if anchor is not None:
                         hub_points.append(anchor)
                 elif action in ("kill", "collect", "get", "goal", "click", "clicknpc", "talk", "use", "buy"):
-                    item = goal.get("targetid") if action in ("collect", "get") else None
-                    if item and item != quest.start_item and \
-                            not any(k[0] == "item" and k[2] == item for k in self.objective_keys(quest)):
-                        # An item the quest needs but does not count, e.g. a key that opens the objective
-                        # object (quest_template.ItemDrop lists such quest drops; StartItem is handed out).
-                        body.extend(self.helper_item(plan, item, goal.get("count") or 1, anchor))
-                        continue
-                    for key in self.match_objectives(goal, quest):
-                        if key[:2] not in plan.done:
-                            self.objective_nodes(plan, key, goal, goals, anchor, body, 0)
-                    if quest.areatriggers and ("explore", 0) not in plan.done:
-                        body.extend(self.explore(plan, anchor))
-            for goal in goals:
-                # Items that start a quest, looted along the way (Zygor: collect/get the item, then accept).
-                if goal.get("action") in ("collect", "get") and goal.get("targetid") and not goal.get("questid"):
-                    body.extend(self.starter_item(goal["targetid"], anchor))
+                    nodes = self.objective_step(goal, quest, goals, talk_npc, anchor, condition, plan)
+                    if plan.has_pickup:
+                        body.extend(nodes)
+                    else:
+                        # The guide runs this before the pickup (ring the bell, then accept):
+                        # hold it and emit right after the pickup, guarded on being in the log.
+                        plan.pending.extend(nodes)
             if body:
-                condition = step_condition(step)
-                if condition:
-                    order.append(f'<If Condition="{condition}">')
-                    order.extend("\t" + line for line in body)
-                    order.append("</If>")
-                else:
-                    order.extend(body)
+                order.extend(body)
 
         if not plans:
             return None
@@ -499,6 +497,7 @@ class Converter:
         return "\n".join(lines)
 
     def pickup(self, plan, talk_npc, anchor):
+        plan.has_pickup = True
         quest = plan.quest
         giver = self.pick_npc(quest.starters, talk_npc, anchor)
         if giver is None:
@@ -528,15 +527,60 @@ class Converter:
             return [node]
         return [f'<If Condition="{" &amp;&amp; ".join(terms)}">', "\t" + node, "</If>"]
 
-    def remaining(self, plan, goals, anchor):
-        """Objectives the guide never pointed at before the turn-in."""
-        out = []
+    @staticmethod
+    def wrap(nodes, condition):
+        """Adds the guide step's race/class requirement (`only Human`), if any, around the nodes."""
+        if not nodes or not condition:
+            return nodes
+        return [f'<If Condition="{condition}">'] + ["\t" + line for line in nodes] + ["</If>"]
+
+    def skipped(self, plan, group):
+        plan.review.append(f"group quest ({group} players)")
+        self.stats["group"] += 1
+        return [f"<!-- SKIP Q{plan.quest.id} {escape(plan.quest.title)}: group quest ({group} players) -->"]
+
+    def flush(self, plan, talk_npc=None, anchor=None):
+        """Steps held back until the pickup is emitted, plus anything the turn-in needs first."""
+        out = list(plan.pending)
+        plan.pending = []
+        if talk_npc is None and anchor is None:
+            return out
         for key in self.objective_keys(plan.quest):
             if key[:2] not in plan.done:
-                self.objective_nodes(plan, key, {}, goals, anchor, out, 0)
+                self.objective_nodes(plan, key, {}, [], anchor, out, 0)
         if plan.quest.areatriggers and ("explore", 0) not in plan.done:
             out.extend(self.explore(plan, anchor))
         return out
+
+
+    def objective_step(self, goal, quest, goals, talk_npc, anchor, condition, plan):
+        """Order nodes for one guide goal, wrapped in the quest-in-log guard when needed."""
+        action = goal.get("action")
+        item = goal.get("targetid") if action in ("collect", "get") else None
+        if item and item != quest.start_item and \
+                not any(k[0] == "item" and k[2] == item for k in self.objective_keys(quest)):
+            # A pre-pickup key farm runs far from the objective's own step; build guarded so it
+            # only runs while the quest arrives. Its block resolves at the drop point, kept ungated.
+            prior, plan.has_pickup = plan.has_pickup, True
+            out = self.helper_item(plan, item, goal.get("count") or 1, anchor)
+            plan.has_pickup = prior
+        else:
+            out = []
+            for key in self.match_objectives(goal, quest):
+                if key[:2] not in plan.done:
+                    self.objective_nodes(plan, key, goal, goals, anchor, out, 0)
+            if quest.areatriggers and ("explore", 0) not in plan.done and action not in ("accept", "turnin"):
+                prior, plan.has_pickup = plan.has_pickup, True
+                nodes = self.explore(plan, anchor)
+                plan.has_pickup = prior
+                out.extend(nodes)
+        if plan.has_pickup or not quest.id:
+            return self.wrap(out, condition)
+        # Before the pickup: blocking stages are replayed after it (their blocks were resolved
+        # at goal time); other helpers run here while the quest arrives.
+        guard = f"((HasQuest({quest.id})) &amp;&amp; (!IsQuestCompleted({quest.id})))"
+        return ([f'<If Condition="{guard}">'] + ["\t" + line for line in self.wrap(out, condition)] + ["</If>"]) \
+            if out else []
 
     def explore(self, plan, anchor):
         plan.done.add(("explore", 0))
