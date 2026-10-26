@@ -254,7 +254,7 @@ class Converter:
         action = goal.get("action")
         pad = "\t" * indent
         if kind == "item":
-            if entry == quest.start_item or any(entry == i for i, _ in quest.source_items):
+            if entry == quest.start_item:
                 return  # handed out with the quest
             mobs = [(c, chance, q) for c, chance, q in self.world.item_from_creatures.get(entry, ())
                     if q or chance >= 5 or chance == 0]
@@ -405,6 +405,13 @@ class Converter:
                     if anchor is not None:
                         hub_points.append(anchor)
                 elif action in ("kill", "collect", "get", "goal", "click", "clicknpc", "talk", "use", "buy"):
+                    item = goal.get("targetid") if action in ("collect", "get") else None
+                    if item and item != quest.start_item and \
+                            not any(k[0] == "item" and k[2] == item for k in self.objective_keys(quest)):
+                        # An item the quest needs but does not count, e.g. a key that opens the objective
+                        # object (quest_template.ItemDrop lists such quest drops; StartItem is handed out).
+                        body.extend(self.helper_item(plan, item, goal.get("count") or 1, anchor))
+                        continue
                     for key in self.match_objectives(goal, quest):
                         if key[:2] not in plan.done:
                             self.objective_nodes(plan, key, goal, goals, anchor, body, 0)
@@ -535,6 +542,22 @@ class Converter:
                 f'<If Condition="((HasQuest({quest.id})) &amp;&amp; (IsQuestCompleted({quest.id})))">', "\t" + node, "</If>",
                 f'<If Condition="((HasQuest({quest.id})) &amp;&amp; (!IsQuestCompleted({quest.id})))">',
                 f'\t<CustomBehavior File="AbandonQuest" QuestId="{quest.id}" Type="Incomplete" />', "</If>"]
+
+    def helper_item(self, plan, item, count, anchor):
+        """Farm an item the guide collects for the quest without the quest counting it."""
+        quest = plan.quest
+        mobs = [c for c, chance, _ in self.world.item_from_creatures.get(item, ()) if self.creature_spawns([c], anchor)]
+        spots = self.creature_spawns(mobs, anchor)
+        if not spots:
+            plan.review.append(f"helper item {item} {self.item_name(item)} has no dropping creature near the guide coordinates")
+            return [f"<!-- Q{quest.id}: {escape(self.item_name(item))} ({item}) is needed but no creature near the "
+                    "guide coordinates drops it -->"]
+        ids = " ".join(f'MobId{i + 1 if i else ""}="{m}"' for i, m in enumerate(mobs[:6]))
+        return ([f'<If Condition="HasQuest({quest.id}) &amp;&amp; !IsQuestCompleted({quest.id}) &amp;&amp; '
+                 f'GetItemCount({item}) &lt; {count}">',
+                 f'\t<CustomBehavior File="CollectThings" QuestId="{quest.id}" CollectItemId="{item}" '
+                 f'CollectItemCount="{count}" HuntingGroundRadius="120" {ids} {xyz(spots[0])}>']
+                + [f"\t\t<Hotspot {xyz(s)} />" for s in spots] + ["\t</CustomBehavior>", "</If>"])
 
     def starter_item(self, item, anchor):
         quests = [q for q in self.world.quests.values() if ("item", item) in q.starters and self.available(q)]

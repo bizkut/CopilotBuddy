@@ -22,7 +22,7 @@ TABLES = ["quest_template", "quest_template_addon", "creature_queststarter", "cr
           "gameobject_loot_template", "npc_vendor", "areatrigger", "areatrigger_involvedrelation"]
 
 CACHE_DIR = Path(__file__).resolve().parent / ".cache"
-CACHE_VERSION = 5
+CACHE_VERSION = 6
 
 _COLUMN = re.compile(r"^\s*`(\w+)`", re.M)
 _VALUE = re.compile(r"'((?:[^'\\]|\\.|'')*)'|(NULL)|(-?[0-9.eE+-]+)")
@@ -84,7 +84,6 @@ class Quest:
     start_item: int = 0
     npc_or_go: list = field(default_factory=list)     # [(id, count)], id < 0 = gameobject
     items: list = field(default_factory=list)         # [(item, count)]
-    source_items: list = field(default_factory=list)  # ItemDrop: (item, count) handed out for the quest
     objective_texts: list = field(default_factory=list)
     prev: int = 0
     next: int = 0
@@ -189,18 +188,15 @@ class World:
     def _read(self, dumps: Path):
         npc_go = [f"RequiredNpcOrGo{i}" for i in range(1, 5)] + [f"RequiredNpcOrGoCount{i}" for i in range(1, 5)]
         req_items = [f"RequiredItemId{i}" for i in range(1, 7)] + [f"RequiredItemCount{i}" for i in range(1, 7)]
-        drops = [f"ItemDrop{i}" for i in range(1, 5)] + [f"ItemDropQuantity{i}" for i in range(1, 5)]
         texts = [f"ObjectiveText{i}" for i in range(1, 5)]
         for row in _rows(dumps / "quest_template.sql",
                          ["ID", "LogTitle", "QuestLevel", "MinLevel", "Flags", "AllowableRaces", "QuestSortID",
-                          "SuggestedGroupNum", "StartItem", *npc_go, *req_items, *drops, *texts]):
+                          "SuggestedGroupNum", "StartItem", *npc_go, *req_items, *texts]):
             quest = Quest(row["ID"], row["LogTitle"] or "", row["QuestLevel"], row["MinLevel"], row["Flags"],
                           row["AllowableRaces"], sort=row["QuestSortID"], group=row["SuggestedGroupNum"],
                           start_item=row["StartItem"])
             quest.npc_or_go = [(row[f"RequiredNpcOrGo{i}"], row[f"RequiredNpcOrGoCount{i}"]) for i in range(1, 5)]
             quest.items = [(row[f"RequiredItemId{i}"], row[f"RequiredItemCount{i}"]) for i in range(1, 7)]
-            quest.source_items = [(row[f"ItemDrop{i}"], row[f"ItemDropQuantity{i}"]) for i in range(1, 5)
-                                  if row[f"ItemDrop{i}"]]
             quest.objective_texts = [row[name] or "" for name in texts]
             self.quests[quest.id] = quest
         for row in _rows(dumps / "quest_template_addon.sql",
