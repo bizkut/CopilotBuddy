@@ -35,9 +35,6 @@ namespace Styx.WoWInternals
         // IsInGame offset
         private const uint IsInGameOffset = 0xBD0792;  // 12388242U
         
-        // Performance counter for aura timing
-        private const uint PerformanceCounterOffset = 0x0086AE20; // 8830240
-        
         #endregion
         
         #region Private Fields
@@ -135,26 +132,6 @@ namespace Styx.WoWInternals
                 catch
                 {
                     return false;
-                }
-            }
-        }
-        
-        /// <summary>
-        /// Gets the current performance counter from WoW.
-        /// Used for calculating aura time remaining.
-        /// </summary>
-        public static uint PerformanceCounter
-        {
-            get
-            {
-                if (Wow == null) return 0U;
-                try
-                {
-                    return Wow.Read<uint>(PerformanceCounterOffset);
-                }
-                catch
-                {
-                    return 0U;
                 }
             }
         }

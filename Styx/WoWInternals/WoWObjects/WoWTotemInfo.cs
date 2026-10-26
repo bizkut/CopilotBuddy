@@ -183,7 +183,7 @@ namespace Styx.WoWInternals.WoWObjects
                 if (startMs == 0U)
                     return DateTime.MinValue;
 
-                long elapsed = (long)ObjectManager.PerformanceCounter - startMs;
+                long elapsed = (long)StyxWoW.WoWClient.PerformanceCounter() - startMs;
                 if (elapsed < 0L)
                     return DateTime.MinValue;
 
@@ -208,7 +208,7 @@ namespace Styx.WoWInternals.WoWObjects
                 if (startMs == 0U || durationMs == 0U || Guid == 0UL)
                     return TimeSpan.Zero;
 
-                long remaining = (long)startMs + durationMs - ObjectManager.PerformanceCounter;
+                long remaining = (long)startMs + durationMs - (long)StyxWoW.WoWClient.PerformanceCounter();
                 return remaining > 0 ? TimeSpan.FromMilliseconds(remaining) : TimeSpan.Zero;
             }
         }

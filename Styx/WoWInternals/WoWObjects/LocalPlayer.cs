@@ -2297,19 +2297,23 @@ namespace Styx.WoWInternals.WoWObjects
         #region Mirror Timers
 
         /// <summary>
-        /// Gets the mirror timer info for the specified type (Breath, Fatigue, FeignDeath).
-        /// Address: 12389248 (0xBD0380)
-        /// Ported from HB 3.3.5a
+        /// Gets the running mirror timer of the specified type (Breath, Fatigue, FeignDeath), or an
+        /// invisible one when that bar is not shown. The client keeps the three bars in display slots
+        /// at 0xBD0B80 (28 bytes each, lua_GetMirrorTimerInfo indexes it by slot), not by type, so the
+        /// slots are scanned for the type.
         /// </summary>
         public MirrorTimerInfo GetMirrorTimerInfo(MirrorTimerType type)
         {
             Memory? wow = ObjectManager.Wow;
             if (wow == null) return default;
-            uint[] array = new uint[]
+            for (int slot = 0; slot < 3; slot++)
             {
-                (uint)(12389248 + (int)type * FastSize<MirrorTimerInfo>.Size)
-            };
-            return wow.Read<MirrorTimerInfo>(array);
+                MirrorTimerInfo timer = wow.Read<MirrorTimerInfo>(
+                    new uint[] { (uint)(0xBD0B80 + slot * FastSize<MirrorTimerInfo>.Size) });
+                if (timer.Type == type && timer.IsVisible)
+                    return timer;
+            }
+            return default;
         }
 
         #endregion

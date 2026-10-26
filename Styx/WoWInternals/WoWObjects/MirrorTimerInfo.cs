@@ -21,11 +21,14 @@ namespace Styx.WoWInternals.WoWObjects
 
 		public uint StartTime;
 
+		/// <summary>Breath/fatigue left in milliseconds, on the client clock that stamped StartTime.</summary>
 		public uint CurrentTime
 		{
 			get
 			{
-				return (uint)((long)this.InitialValue + (long)this.ChangePerMillisecond * (long)((ulong)(ObjectManager.PerformanceCounter - this.StartTime)));
+				long elapsed = (long)StyxWoW.WoWClient.PerformanceCounter() - this.StartTime;
+				long value = this.InitialValue + (long)this.ChangePerMillisecond * elapsed;
+				return (uint)Math.Clamp(value, 0L, this.MaxValue);
 			}
 		}
 
