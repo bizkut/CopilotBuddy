@@ -16,7 +16,8 @@ PRELUDE = r"""
 tinsert, tremove = table.insert, table.remove
 function TableKeys(tbl) local keys = {} for key in pairs(tbl or {}) do keys[#keys + 1] = key end return keys end
 function ZygorGuidesViewer_L() return setmetatable({ coords = "%s,%s" }, { __index = function(_, key) return key end }) end
-GetRealZoneText = function() return "" end
+-- In game Parser.lua reads bare coordinates in the player's zone; load_guides sets FALLBACK_ZONE.
+GetRealZoneText = function() return FALLBACK_ZONE or "" end
 UnitRace = function() return "Human", "Human" end
 UnitClass = function() return "WARRIOR", "WARRIOR" end
 UnitLevel = function() return 1 end
@@ -114,12 +115,19 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig", errors="replace")
 
 
-def load_guides(addon: Path, files, faction: str, includes=()):
+_INCLUDE = re.compile(r'#include\s+"([^"]+)"')
+_QUEST_REF = re.compile(r'\b(?:accept|turnin)\b[^\n#]*##(\d+)|\|q\s+(\d+)')
+
+
+def load_guides(addon: Path, files, faction: str, includes=(), home_zone=None):
     """Registers and parses every guide of `files` (paths relative to Guides/).
 
     `faction` ("Alliance"/"Horde") is what UnitFactionGroup returns while the
     guides register: several files only register for the matching faction.
     `includes` are loaded first (Retail guides `#include` shared snippets).
+    `home_zone(quest_ids)` names the zone of a guide's quests: a guide whose bare
+    coordinates have no map before them (Parser.lua then uses the player's zone)
+    is parsed again as if the player stood there.
     Returns (guides, problems); each guide is a dict with title, file, header, steps.
     """
     runtime = lupa.LuaRuntime(unpack_returned_tuples=True, encoding="utf-8")
@@ -148,6 +156,17 @@ def load_guides(addon: Path, files, faction: str, includes=()):
         result = runtime.globals().ExportGuide(entry)
         guide, problem = result if isinstance(result, tuple) else (result, None)
         title = str(entry.title).replace("\\\\", "\\")
+        if guide is None and home_zone and "has no map parameter" in str(problem):
+            text = str(entry.data)
+            text += "".join(str(zgv.registered_includes[name] or "") for name in _INCLUDE.findall(text))
+            zone = home_zone([int(a or b) for a, b in _QUEST_REF.findall(text)])
+            if zone:
+                runtime.globals().FALLBACK_ZONE = zone
+                result = runtime.globals().ExportGuide(entry)
+                runtime.globals().FALLBACK_ZONE = None
+                guide, problem = result if isinstance(result, tuple) else (result, None)
+                if guide is not None:
+                    problems.append(f"{title}: bare coordinates read in {zone}, the zone of its quests")
         if guide is None:
             problems.append(f"{title}: parse failed: {problem}")
             continue

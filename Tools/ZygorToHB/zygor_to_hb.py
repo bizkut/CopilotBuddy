@@ -814,6 +814,16 @@ def main():
     zones = Zones(dbc)
     factions = FactionTemplates(dbc)
     locks = Locks(dbc)
+
+    def home_zone(quest_ids):
+        """Map zone most of the quests belong to (QuestSortID > 0 is an AreaTable zone)."""
+        sorts = Counter(world.quests[q].sort for q in quest_ids if q in world.quests and world.quests[q].sort > 0)
+        for area, _ in sorts.most_common():
+            name = zones.area_names.get(area)
+            if name in zones.bounds:
+                return name
+        return None
+
     for side, sets in GUIDE_SETS.items():
         if args.faction and side != args.faction:
             continue
@@ -821,7 +831,7 @@ def main():
         guides = []
         seen = set()
         for category, files in sets:
-            loaded, problems = load_guides(addon, files, side, INCLUDES + LEECH_SOURCES[side])
+            loaded, problems = load_guides(addon, files, side, INCLUDES + LEECH_SOURCES[side], home_zone)
             for problem in problems:
                 print(f"{side} {category}: {problem}", file=sys.stderr)
             for guide in loaded:
