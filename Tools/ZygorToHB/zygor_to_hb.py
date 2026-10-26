@@ -644,14 +644,23 @@ def step_condition(step):
     return " &amp;&amp; ".join(f"({t})" for t in joined) if len(joined) > 1 else joined[0]
 
 
+def guide_set(title, category):
+    """Category plus the qualifier of the guide set ("Ding80 TBC solo"): the Ding80 plain,
+    TBC solo and TBC duo routes share their zone titles."""
+    root = title.split("\\")[0]
+    qualifier = root.split("Guides", 1)[1].strip() if "Guides" in root else ""
+    return f"{category} {qualifier}" if qualifier else category
+
+
 def profile_title(title, category):
     parts = title.split("\\")
-    return "\\".join([f"Zygor {category}"] + parts[1:]) if len(parts) > 1 else f"Zygor {category}\\{title}"
+    head = f"Zygor {guide_set(title, category)}"
+    return "\\".join([head] + parts[1:]) if len(parts) > 1 else f"{head}\\{title}"
 
 
 def output_name(title, category):
     parts = [file_name(p) for p in title.split("\\")[1:]] or [file_name(title)]
-    return "_".join([category] + parts)
+    return "_".join([guide_set(title, category)] + parts)
 
 
 def main():
@@ -702,13 +711,32 @@ def main():
                 seen.add(guide["title"])
                 guides.append((category, guide))
         file_of_title = {g["title"]: output_name(g["title"], c) for c, g in guides}
+        clashes = Counter(name.lower() for name in file_of_title.values())
+        clashes = sorted(name for name, count in clashes.items() if count > 1)
+        if clashes:
+            raise SystemExit(f"{side}: guides share an output file name: {', '.join(clashes)}")
+        # Guides without a convertible quest write no profile: their `next` link is followed
+        # on so the LoadProfile chain lands on the next profile that exists.
+        probe = Converter(world, zones, factions, side)
+        empty = {g["title"] for c, g in guides if probe.convert(g, c, file_of_title) is None}
+        next_of = {g["title"]: (g["header"].get("next") if isinstance(g["header"].get("next"), str) else None)
+                   for _, g in guides}
+        for title in empty:
+            target, visited = next_of.get(title), {title}
+            while target in empty and target not in visited:
+                visited.add(target)
+                target = next_of.get(target)
+            if target in file_of_title and target not in empty:
+                file_of_title[title] = file_of_title[target]
+            else:
+                del file_of_title[title]
         out_dir = args.out / side
         out_dir.mkdir(parents=True, exist_ok=True)
         written = 0
         for category, guide in guides:
-            xml = converter.convert(guide, category, file_of_title)
-            if xml is None:
+            if guide["title"] in empty:
                 continue
+            xml = converter.convert(guide, category, file_of_title)
             (out_dir / f"{file_of_title[guide['title']]}.xml").write_text(xml, encoding="utf-8", newline="\n")
             written += 1
         stats = converter.stats
