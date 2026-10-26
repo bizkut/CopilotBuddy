@@ -101,6 +101,9 @@ namespace Styx.Helpers
         [Setting]
         public string[] EnabledPlugins { get; set; }
 
+        [Setting(Explanation = "Quests a profile gave up on (abandoned with Remember=\"True\" because they cannot be automated). Their pickups are skipped; remove an entry to let the bot try that quest again.")]
+        public uint[] GivenUpQuests { get; set; }
+
         [DefaultValue(2)]
         [Setting(Explanation = "The last selected index used by the Combobox in the form.")]
         public int SelectedBotIndex

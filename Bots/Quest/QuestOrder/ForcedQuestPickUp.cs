@@ -66,6 +66,11 @@ public class ForcedQuestPickUp : ForcedBehavior
                 if (this._giverHostile)
                     return true;
 
+                // A quest a profile gave up on earlier (abandoned as impossible to automate) is not
+                // taken again just to be abandoned again on every profile load.
+                if (GivenUpQuests.Contains(this.QuestId))
+                    return true;
+
                 // If quest is in completed cache, skip pickup
                 if (ObjectManager.Me.QuestLog.GetCompletedQuests().Contains(this.QuestId))
                     return true;
@@ -98,6 +103,11 @@ public class ForcedQuestPickUp : ForcedBehavior
 
     public override void OnStart()
     {
+        if (GivenUpQuests.Contains(this.QuestId))
+        {
+            Logging.Write("[PickUp] Skipping {0}: given up on it before (CharacterSettings GivenUpQuests)", this.QuestName);
+            return;
+        }
         if (ObjectManager.Me.QuestLog.GetAllQuests().Count >= 25)
         {
             Logging.Write(Color.Red, "You do not have any space in your quest log.");
