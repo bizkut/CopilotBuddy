@@ -32,6 +32,8 @@ public class UseGameObjectObjective : QuestObjective
     private int _locationUpdateCounter;
     private Composite _behaviorTree;
     private WoWGameObject _currentTarget;
+    private ulong _standPointFor;
+    private WoWPoint _standPoint;
 
     public UseGameObjectObjective(
         PlayerQuest quest,
@@ -166,7 +168,51 @@ public class UseGameObjectObjective : QuestObjective
         return (WoWObject)this._currentTarget != (WoWObject)null;
     }
 
-    private bool IsWithinInteractRange(object context) => this._currentTarget.DistanceSqr < 25.0;
+    // The client's own interact distance for the object, or standing on the walkable spot closest
+    // to it: ropes, levers and banners hang off walls above the navmesh, so nothing gets closer.
+    private bool IsWithinInteractRange(object context) =>
+        this._currentTarget.DistanceSqr < Math.Max(25.0, this._currentTarget.InteractRangeSqr)
+        || StyxWoW.Me.Location.DistanceSqr(this.StandPoint()) < 4f;
+
+    // Walkable mesh point nearest the object in 3D that a mesh path from here actually reaches,
+    // sampled on every mesh layer around it: a rope hanging over a staircase resolves to the
+    // stairs, not the ground under it or a disconnected ledge.
+    private WoWPoint StandPoint()
+    {
+        if (this._standPointFor == this._currentTarget.Guid)
+            return this._standPoint;
+        WoWPoint target = this._currentTarget.Location;
+        var spots = new List<WoWPoint>();
+        for (float radius = 0f; radius <= 6f; radius += 0.75f)
+        {
+            for (int step = 0; step < (radius == 0f ? 1 : 16); step++)
+            {
+                float x = target.X + radius * MathF.Cos(step * MathF.PI / 8f);
+                float y = target.Y + radius * MathF.Sin(step * MathF.PI / 8f);
+                foreach (float z in Navigator.FindHeights(x, y))
+                    spots.Add(new WoWPoint(x, y, z));
+            }
+        }
+        WoWPoint me = StyxWoW.Me.Location;
+        WoWPoint best = target;
+        int tried = 0;
+        foreach (WoWPoint spot in spots.OrderBy(s => s.DistanceSqr(target)))
+        {
+            if (++tried > 40)
+                break;
+            WoWPoint[] path = Navigator.GeneratePath(me, spot);
+            if (path.Length > 0 && path[path.Length - 1].DistanceSqr(spot) < 2.25f)
+            {
+                best = spot;
+                break;
+            }
+        }
+        this._standPointFor = this._currentTarget.Guid;
+        this._standPoint = best;
+        Logging.WriteDebug("[UseGameObject] {0} at {1}, standing at {2} ({3:F1} yd from it, {4} mesh spots, {5} paths tried)",
+            this._currentTarget.Name, target, best, best.Distance(target), spots.Count, tried);
+        return best;
+    }
 
     private RunStatus InteractWithGameObject(object context)
     {
@@ -187,11 +233,11 @@ public class UseGameObjectObjective : QuestObjective
         return RunStatus.Success;
     }
 
-    private bool NeedsToMove(object context) => this._currentTarget.Distance >= 5.0;
+    private bool NeedsToMove(object context) => !this.IsWithinInteractRange(context);
 
     private RunStatus MoveToTarget(object context)
     {
-        Navigator.MoveTo(this._currentTarget.Location);
+        Navigator.MoveTo(this.StandPoint());
         return RunStatus.Success;
     }
 
