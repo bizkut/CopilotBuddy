@@ -1,70 +1,25 @@
-using System;
 using System.Runtime.InteropServices;
 
 namespace Styx.WoWInternals.WoWObjects
 {
     /// <summary>
-    /// Represents a player's standing with a faction.
+    /// A player's standing with a faction: one 16-byte entry of the client's reputation array
+    /// (0xC22B78, indexed by Faction.dbc ReputationIndex). GetRepListRepValue (0x5D05B0) returns
+    /// the sum of the first two ints; the last two are not read.
     /// </summary>
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     public struct FactionStanding
     {
-        /// <summary>
-        /// The faction ID this standing is for.
-        /// </summary>
-        public uint FactionId;
+        /// <summary>Starting reputation for the player's race and class (Faction.dbc base).</summary>
+        public int BaseReputation;
 
-        /// <summary>
-        /// Reputation flags for this faction.
-        /// </summary>
-        [MarshalAs(UnmanagedType.U1)]
-        public ReputationFlags Flags;
-
-        /// <summary>
-        /// Padding bytes.
-        /// </summary>
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
-        private byte[] _padding;
-
-        /// <summary>
-        /// Base reputation value.
-        /// </summary>
+        /// <summary>Reputation earned on top of the base (character_reputation.standing).</summary>
         public int Reputation;
 
-        /// <summary>
-        /// Bonus reputation from buffs, etc.
-        /// </summary>
-        public int ReputationBonus;
+        private readonly int _unknown8;
+        private readonly int _unknownC;
 
-        /// <summary>
-        /// Gets the total reputation (base + bonus).
-        /// </summary>
-        public int TotalReputation => Reputation + ReputationBonus;
-
-        /// <summary>
-        /// Checks if the specified reputation flag is set.
-        /// </summary>
-        public bool HasFlag(ReputationFlags flag)
-        {
-            return (Flags & flag) != 0;
-        }
-    }
-
-    /// <summary>
-    /// Reputation flags for faction standings.
-    /// WoW 3.3.5a build 12340.
-    /// </summary>
-    [Flags]
-    public enum ReputationFlags : byte
-    {
-        None = 0,
-        Visible = 1,
-        AtWar = 2,
-        Hidden = 4,
-        ForcedInvisible = 8,
-        ForcedPeace = 16,
-        Inactive = 32,
-        Flag_0x40 = 64,
-        Expansion_2 = 128
+        /// <summary>Total reputation, the value the client ranks Hated..Exalted on.</summary>
+        public int TotalReputation => BaseReputation + Reputation;
     }
 }

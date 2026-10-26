@@ -1579,7 +1579,8 @@ namespace Styx.WoWInternals.WoWObjects
         // Forced reactions array - address in WoW 3.3.5a
         private const uint ForcedReactionsCountPtr = 0xC20230;  // 12713520U -> 12727440U
         private const uint ForcedReactionsArrayPtr = 0xC20234;  // 12713524U -> 12727444U
-        private const uint FactionStandingBasePtr = 0xC202F0;   // 12725104U
+        // Reputation array, 16 bytes per Faction.dbc ReputationIndex (GetRepListRepValue 0x5D05B0).
+        private const uint FactionStandingBasePtr = 0xC22B78;
 
         /// <summary>
         /// Struct for forced reaction entries.
