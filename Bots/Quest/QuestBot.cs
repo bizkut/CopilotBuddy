@@ -43,9 +43,10 @@ public class QuestBot : BotBase
 
     public static Composite CreateRoot()
     {
-            return (Composite)new PrioritySelector(new Composite[7]
+            return (Composite)new PrioritySelector(new Composite[8]
         {
             (Composite)LevelBot.CreateDeathBehavior(),
+            LevelBot.CreateBreathBehavior(),
             LevelBot.CreateCombatBehavior(),
             LevelBot.CreateLootBehavior(),
             QuestBot.CreateTargetingBehavior(),

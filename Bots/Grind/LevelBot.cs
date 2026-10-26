@@ -118,6 +118,7 @@ namespace Bots.Grind
                 {
                     _rootBehavior = new PrioritySelector(
                         CreateDeathBehavior(),
+                        CreateBreathBehavior(),
                         CreateCombatBehavior(),
                         CreateLootBehavior(),
                         CreateVendorBehavior(),
@@ -629,6 +630,77 @@ namespace Bots.Grind
                 return float.MaxValue;
 
             return nearest.Distance2D(point);
+        }
+
+        #endregion
+
+        #region Breath Behavior
+
+        private static bool _surfacingForAir;
+        private static bool _breathTimerSeen;
+
+        /// <summary>
+        /// Swims straight up for air when the breath timer would run out before the surface is
+        /// reached, then waits at the surface until the lungs are full. Runs ahead of combat and
+        /// objectives: underwater quest objects and mobs otherwise drown a toon without water breathing.
+        /// </summary>
+        public static Composite CreateBreathBehavior()
+        {
+            return new Decorator(ctx => NeedsAir(),
+                new TreeSharp.Action(ctx =>
+                {
+                    if (StyxWoW.Me.GetMirrorTimerInfo(MirrorTimerType.Breath).ChangePerMillisecond > 0)
+                    {
+                        WoWMovement.MoveStop(WoWMovement.MovementDirection.JumpAscend);
+                        TreeRoot.StatusText = "Catching breath";
+                    }
+                    else
+                    {
+                        TreeRoot.StatusText = "Swimming up for air";
+                        WoWMovement.Move(WoWMovement.MovementDirection.JumpAscend);
+                    }
+                    return RunStatus.Success;
+                }));
+        }
+
+        private static bool NeedsAir()
+        {
+            LocalPlayer me = StyxWoW.Me;
+            MirrorTimerInfo breath = me.GetMirrorTimerInfo(MirrorTimerType.Breath);
+            if (!breath.IsVisible)
+            {
+                _breathTimerSeen = false;
+                if (_surfacingForAir)
+                {
+                    _surfacingForAir = false;
+                    WoWMovement.MoveStop(WoWMovement.MovementDirection.JumpAscend);
+                    Logging.Write("[Breath] Lungs full, back to work");
+                }
+                return false;
+            }
+            long left = breath.CurrentTime;
+            if (!_breathTimerSeen)
+            {
+                _breathTimerSeen = true;
+                Logging.WriteDebug("[Breath] Underwater, breath timer {0}", breath);
+            }
+            if (_surfacingForAir)
+                return true;
+            if (!me.IsSwimming || breath.ChangePerMillisecond >= 0)
+                return false;
+            // Water surface straight above; none found (ice, cave roof) counts as deep water.
+            float depth = GameWorld.TraceLine(me.Location.Add(0f, 0f, 200f), me.Location,
+                GameWorld.CGWorldFrameHitFlags.HitTestLiquid, out WoWPoint surface)
+                ? Math.Max(0f, surface.Z - me.Location.Z)
+                : 60f;
+            float speed = Math.Max(1f, me.MovementInfo.SwimSpeed);
+            double neededMs = Math.Max(20000.0, depth / speed * 2.5 * 1000.0 + 5000.0);
+            if (left > neededMs)
+                return false;
+            _surfacingForAir = true;
+            Logging.Write("[Breath] {0:F0}s of breath left, {1:F0} yd under the surface: swimming up for air",
+                left / 1000.0, depth);
+            return true;
         }
 
         #endregion
