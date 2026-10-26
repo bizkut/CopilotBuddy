@@ -79,3 +79,18 @@ class FactionTemplates:
         if PLAYER_FACTION[side] in row[10:14]:
             return False
         return bool(row[5] & PLAYER_GROUP[side]) or PLAYER_FACTION[side] in row[6:10]
+
+
+class Locks:
+    """Lock.dbc: the items a lock asks for (a key opening a cage, a chest or a switch)."""
+
+    LOCK_KEY_ITEM = 1
+
+    def __init__(self, dbc: Path):
+        rows, _ = _read_dbc(dbc / "Lock.dbc", "<33I")
+        # id, type[8], index[8], skill[8], action[8]
+        self.items = {row[0]: [row[9 + k] for k in range(8) if row[1 + k] == self.LOCK_KEY_ITEM and row[9 + k]]
+                      for row in rows}
+
+    def items_for(self, lock_id):
+        return self.items.get(lock_id, [])

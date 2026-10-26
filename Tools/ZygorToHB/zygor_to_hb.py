@@ -32,7 +32,7 @@ import re
 import sys
 from xml.sax.saxutils import escape, quoteattr
 
-from dbc import FactionTemplates, Zones
+from dbc import FactionTemplates, Locks, Zones
 from world_db import World
 from zygor_guides import guide_faction, load_guides
 
@@ -93,6 +93,14 @@ MAX_HOTSPOTS = 8
 
 UNIT_FLAG_NOT_ATTACKABLE = 0x2 | 0x100 | 0x2000000   # NON_ATTACKABLE, IMMUNE_TO_PC, NOT_SELECTABLE
 
+# Quest skill requirements a profile condition can check: riding by its rank spell (Apprentice 75, Journeyman 150,
+# Expert 225, Artisan 300), gathering by the ConditionGlobals skill properties. Others are skipped at pickup.
+RIDING = 762
+RIDING_SPELLS = [(75, 33388), (150, 33391), (225, 34090), (300, 34091)]
+SKILL_PROPERTIES = {186: "MiningSkill", 182: "HerbalismSkill", 393: "SkinningSkill"}
+# Gameobject types whose Data0 is a Lock.dbc id: door, button, chest, goober.
+LOCKED_TYPES = (0, 1, 3, 10)
+
 
 def fmt(value):
     text = f"{value:.4f}".rstrip("0").rstrip(".")
@@ -130,10 +138,15 @@ class Plan:
 
 
 class Converter:
-    def __init__(self, world: World, zones: Zones, factions: FactionTemplates, side: str):
+    def __init__(self, world: World, zones: Zones, factions: FactionTemplates, locks: Locks, side: str):
         self.world, self.zones, self.factions, self.side = world, zones, factions, side
         self.race_mask = sum(1 << (r - 1) for r in FACTION_RACES[side])
         self.stats = Counter()
+        self.next_of = defaultdict(list)
+        for q in world.quests.values():
+            if q.next > 0:
+                self.next_of[q.next].append(q.id)
+        self.locks = locks
 
     # ---------------------------------------------------------------- spawns
 
@@ -198,9 +211,12 @@ class Converter:
             terms.append(" || ".join(f"(Me.Class == WoWClass.{CLASS_NAMES[c]})" for c in classes))
         if quest.min_level > 1:
             terms.append(f"Me.Level &gt;= {quest.min_level}")
-        if quest.prev > 0:
-            terms.append(f"IsQuestCompleted({quest.prev})")
-        elif quest.prev < 0:
+        # AzerothCore offers the quest once ANY positive previous quest is rewarded: PrevQuestID plus every quest
+        # whose NextQuestID points here (ObjectMgr adds those to prevQuests).
+        prevs = sorted({p for p in [quest.prev] + self.next_of.get(quest.id, []) if p > 0})
+        if prevs:
+            terms.append(" || ".join(f"IsQuestCompleted({p})" for p in prevs))
+        if quest.prev < 0:
             terms.append(f"HasQuest({-quest.prev})")
         if quest.exclusive > 0:
             for other in self.world.quests.values():
@@ -278,6 +294,7 @@ class Converter:
             obj = -entry
             spots = self.object_spawns([obj], anchor)
             if use_items and spots:
+                out.extend(pad + line for line in self.lock_keys(plan, obj, anchor))
                 plan.behaviors = True
                 out.append(f'{pad}<CustomBehavior File="UseItemOn" QuestId="{quest.id}" ItemId="{use_items[0]}" '
                            f'MobId="{obj}" MobType="GameObject" NumOfTimes="{count}" Range="5" CollectionDistance="200" '
@@ -286,6 +303,7 @@ class Converter:
             if not spots:
                 plan.review.append(f"object {obj} {self.object_name(obj)} has no spawn near the guide coordinates")
                 return
+            out.extend(pad + line for line in self.lock_keys(plan, obj, anchor))
             out.append(f'{pad}<Objective QuestName={qname} QuestId="{quest.id}" Type="UseObject" ObjectId="{obj}" '
                        f'UseCount="{count}" />')
             plan.blocks.append([f'\t\t<Objective Type="UseObject" ObjectId="{obj}" UseCount="{count}">']
@@ -498,6 +516,14 @@ class Converter:
             typ = ' GiverType="Object"' if kind == "object" else ""
             node = (f'<PickUp QuestName={qname} QuestId="{quest.id}" GiverName={attr(giver_name)} GiverId="{entry}"'
                     f'{typ} {xyz(spot)} />')
+        skill = self.skill_condition(quest)
+        if skill is False:
+            plan.review.append(f"needs profession skill {quest.skill} ({quest.skill_points})")
+            self.stats["skill"] += 1
+            return [f"<!-- SKIP pickup Q{quest.id} {escape(quest.title)}: needs skill line {quest.skill} at "
+                    f"{quest.skill_points}, which a profile cannot check -->"]
+        if skill:
+            terms.append(skill)
         if not terms:
             return [node]
         return [f'<If Condition="{" &amp;&amp; ".join(terms)}">', "\t" + node, "</If>"]
@@ -543,18 +569,51 @@ class Converter:
                 f'<If Condition="((HasQuest({quest.id})) &amp;&amp; (!IsQuestCompleted({quest.id})))">',
                 f'\t<CustomBehavior File="AbandonQuest" QuestId="{quest.id}" Type="Incomplete" />', "</If>"]
 
+    def skill_condition(self, quest):
+        """Condition for the quest's skill requirement, None if it has none, False if a profile cannot check it."""
+        if not quest.skill:
+            return None
+        points = quest.skill_points
+        if quest.skill == RIDING:
+            spell = next((s for need, s in RIDING_SPELLS if points <= need), RIDING_SPELLS[-1][1])
+            return f"HasSpell({spell})"
+        if quest.skill in SKILL_PROPERTIES:
+            return f"{SKILL_PROPERTIES[quest.skill]}.CurrentValue &gt;= {points}"
+        return False
+
+    def lock_keys(self, plan, obj, anchor):
+        """Farm the key items the object's lock asks for (Lock.dbc), unless the quest hands them out."""
+        go = self.world.objects.get(obj)
+        if go is None or go.type not in LOCKED_TYPES:
+            return []
+        out = []
+        for item in self.locks.items_for(go.data0):
+            if item == plan.quest.start_item or ("key", item) in plan.done:
+                continue
+            plan.done.add(("key", item))
+            out.extend(self.helper_item(plan, item, 1, anchor))
+        return out
+
     def helper_item(self, plan, item, count, anchor):
         """Farm an item the guide collects for the quest without the quest counting it."""
         quest = plan.quest
+        guard = (f'<If Condition="HasQuest({quest.id}) &amp;&amp; !IsQuestCompleted({quest.id}) &amp;&amp; '
+                 f'GetItemCount({item}) &lt; {count}">')
         mobs = [c for c, chance, _ in self.world.item_from_creatures.get(item, ()) if self.creature_spawns([c], anchor)]
         spots = self.creature_spawns(mobs, anchor)
         if not spots:
-            plan.review.append(f"helper item {item} {self.item_name(item)} has no dropping creature near the guide coordinates")
-            return [f"<!-- Q{quest.id}: {escape(self.item_name(item))} ({item}) is needed but no creature near the "
+            # Herbs, chests and other lootable objects: loot them until the count is reached.
+            objs = [o for o, _ in self.world.item_from_objects.get(item, ()) if self.object_spawns([o], anchor)]
+            spots = self.object_spawns(objs, anchor)
+            if spots:
+                ids = " ".join(f'MobId{i + 1 if i else ""}="{o}"' for i, o in enumerate(objs[:6]))
+                return [guard, f'\t<CustomBehavior File="InteractWith" QuestId="{quest.id}" {ids} ObjectType="GameObject" '
+                        f'Loot="True" NumOfTimes="{count}" CollectionDistance="200" {xyz(spots[0])} />', "</If>"]
+            plan.review.append(f"helper item {item} {self.item_name(item)} has no creature or object source near the guide coordinates")
+            return [f"<!-- Q{quest.id}: {escape(self.item_name(item))} ({item}) is needed but nothing near the "
                     "guide coordinates drops it -->"]
         ids = " ".join(f'MobId{i + 1 if i else ""}="{m}"' for i, m in enumerate(mobs[:6]))
-        return ([f'<If Condition="HasQuest({quest.id}) &amp;&amp; !IsQuestCompleted({quest.id}) &amp;&amp; '
-                 f'GetItemCount({item}) &lt; {count}">',
+        return ([guard,
                  f'\t<CustomBehavior File="CollectThings" QuestId="{quest.id}" CollectItemId="{item}" '
                  f'CollectItemCount="{count}" HuntingGroundRadius="120" {ids} {xyz(spots[0])}>']
                 + [f"\t\t<Hotspot {xyz(s)} />" for s in spots] + ["\t</CustomBehavior>", "</If>"])
@@ -715,10 +774,11 @@ def main():
     dbc = args.dbc or args.server / "data" / "dbc"
     zones = Zones(dbc)
     factions = FactionTemplates(dbc)
+    locks = Locks(dbc)
     for side, sets in GUIDE_SETS.items():
         if args.faction and side != args.faction:
             continue
-        converter = Converter(world, zones, factions, side)
+        converter = Converter(world, zones, factions, locks, side)
         guides = []
         seen = set()
         for category, files in sets:
@@ -742,7 +802,7 @@ def main():
             raise SystemExit(f"{side}: guides share an output file name: {', '.join(clashes)}")
         # Guides without a convertible quest write no profile: their `next` link is followed
         # on so the LoadProfile chain lands on the next profile that exists.
-        probe = Converter(world, zones, factions, side)
+        probe = Converter(world, zones, factions, locks, side)
         empty = {g["title"] for c, g in guides if probe.convert(g, c, file_of_title) is None}
         next_of = {g["title"]: (g["header"].get("next") if isinstance(g["header"].get("next"), str) else None)
                    for _, g in guides}

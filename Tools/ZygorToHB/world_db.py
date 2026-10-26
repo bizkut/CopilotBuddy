@@ -22,7 +22,7 @@ TABLES = ["quest_template", "quest_template_addon", "creature_queststarter", "cr
           "gameobject_loot_template", "npc_vendor", "areatrigger", "areatrigger_involvedrelation"]
 
 CACHE_DIR = Path(__file__).resolve().parent / ".cache"
-CACHE_VERSION = 6
+CACHE_VERSION = 7
 
 _COLUMN = re.compile(r"^\s*`(\w+)`", re.M)
 _VALUE = re.compile(r"'((?:[^'\\]|\\.|'')*)'|(NULL)|(-?[0-9.eE+-]+)")
@@ -91,6 +91,7 @@ class Quest:
     breadcrumb_for: int = 0
     special_flags: int = 0
     skill: int = 0
+    skill_points: int = 0
     rep_faction: int = 0
     rep_value: int = 0
     max_level: int = 0
@@ -201,13 +202,14 @@ class World:
             self.quests[quest.id] = quest
         for row in _rows(dumps / "quest_template_addon.sql",
                          ["ID", "MaxLevel", "AllowableClasses", "PrevQuestID", "NextQuestID", "ExclusiveGroup",
-                          "BreadcrumbForQuestId", "RequiredSkillID", "RequiredMinRepFaction", "RequiredMinRepValue",
-                          "SpecialFlags"]):
+                          "BreadcrumbForQuestId", "RequiredSkillID", "RequiredSkillPoints", "RequiredMinRepFaction",
+                          "RequiredMinRepValue", "SpecialFlags"]):
             quest = self.quests.get(row["ID"])
             if quest:
                 quest.max_level, quest.classes = row["MaxLevel"], row["AllowableClasses"]
                 quest.prev, quest.next, quest.exclusive = row["PrevQuestID"], row["NextQuestID"], row["ExclusiveGroup"]
                 quest.breadcrumb_for, quest.skill = row["BreadcrumbForQuestId"], row["RequiredSkillID"]
+                quest.skill_points = row["RequiredSkillPoints"]
                 quest.rep_faction, quest.rep_value = row["RequiredMinRepFaction"], row["RequiredMinRepValue"]
                 quest.special_flags = row["SpecialFlags"]
         for table, kind, target in (("creature_queststarter", "npc", "starters"), ("creature_questender", "npc", "enders"),
